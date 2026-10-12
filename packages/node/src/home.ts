@@ -7,15 +7,12 @@ import {
   chmodSync,
   closeSync,
   fchmodSync,
-  fsyncSync,
   openSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
-  renameSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { isIP } from 'node:net';
@@ -24,6 +21,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { FundingConfigSchema } from './funding.ts';
 import type { DropClaim } from './engine.ts';
+import { writeDurablePrivate } from './durable.ts';
+import { ReplayStore } from './replay-store.ts';
 import {
   PrivateNetworkSchema,
   relayUrlAllowed,
@@ -39,13 +38,10 @@ import {
   ReceiptSchema,
   type Identity,
   type Receipt,
-  MAX_CLOCK_SKEW_MS,
-  REPLAY_WINDOW_MS,
-  sha256Hex,
-  uuidv7Timestamp,
 } from '@drop/protocol';
 
-export const MAX_RECEIVED_DROPS = 16_384;
+export { MAX_RECEIVED_DROPS, MAX_RECEIVED_DROPS_PER_PEER, REPLAY_LOCK_OWNER } from './replay-store.ts';
+export { syncDirectory } from './durable.ts';
 
 /**
  * The loopback relay `drop init` and the app start on when nobody chose one (T3.1); the Tauri shell keeps the same value
@@ -194,150 +190,10 @@ function writePrivate(path: string, content: string): void {
 /** Files that name the peers and the team: owner-only since T4.15, even when an older version left them wider. */
 const PRIVATE_STATE_FILES = ['peers.json', 'team.json'] as const;
 
-/**
- * Makes a rename or an unlink in `path` durable on macOS and Linux. Windows cannot flush a directory: it refuses
- * FlushFileBuffers on a directory handle (EPERM) and journals the entry change in NTFS itself, so only this call is
- * skipped there. Every file is still flushed before its rename, and the replay store stays fail-closed: a marker set
- * that disagrees with its durable digest, clock or version is refused at the next admission (E_REPLAY_STATE).
- */
-export function syncDirectory(path: string, platform: NodeJS.Platform = process.platform): void {
-  if (platform === 'win32') return;
-  const fd = openSync(path, 'r');
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function writeDurablePrivate(path: string, content: string): void {
-  const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`;
-  try {
-    const fd = openSync(temporary, 'wx', 0o600);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(temporary, path);
-    syncDirectory(join(path, '..'));
-  } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch (cleanupError) {
-      if (errorCode(cleanupError) !== 'ENOENT') {
-        throw new AggregateError([error, cleanupError], 'E_REPLAY_STATE temp cleanup failed', {
-          cause: cleanupError,
-        });
-      }
-    }
-    throw error;
-  }
-}
-
-const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LEGACY_MARKER =
-  /^([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12})$/i;
-/** Names this process in its replay lock; a lock carrying it is our own leftover, since claims are synchronous. */
-export const REPLAY_LOCK_OWNER = `${String(process.pid)} ${randomBytes(8).toString('hex')}\n`;
-
-function errorCode(error: unknown): unknown {
-  return error instanceof Error && 'code' in error ? error.code : undefined;
-}
-
-function lockOwner(lock: string): string | undefined {
-  try {
-    return readFileSync(join(lock, 'owner'), 'utf8');
-  } catch {
-    return undefined;
-  }
-}
-
-function createLock(path: string): boolean {
-  try {
-    mkdirSync(path, { mode: 0o700 });
-    return true;
-  } catch (error) {
-    if (errorCode(error) === 'EEXIST') return false;
-    throw new Error('E_REPLAY_STATE storage unavailable', { cause: error });
-  }
-}
-
-function claimLock(lock: string): void {
-  try {
-    writeFileSync(join(lock, 'owner'), REPLAY_LOCK_OWNER, { mode: 0o600 });
-  } catch (error) {
-    rmSync(lock, { recursive: true, force: true });
-    throw new Error('E_REPLAY_STATE storage unavailable', { cause: error });
-  }
-}
-
-/** A foreign lock is never taken over by age: a slow filesystem may leave a live claim holding it. */
-function acquireReplayLock(lock: string): void {
-  if (createLock(lock)) {
-    claimLock(lock);
-    return;
-  }
-  // Claims are synchronous in this process, so its own nonce can only identify a leftover lock.
-  if (lockOwner(lock) !== REPLAY_LOCK_OWNER) throw new Error('E_REPLAY_STATE claim locked');
-  rmSync(lock, { recursive: true, force: true });
-  if (!createLock(lock)) throw new Error('E_REPLAY_STATE claim locked');
-  claimLock(lock);
-}
-
-/**
- * A claim failed after creating its marker (T3.1b review): the request is refused, so the marker must not outlive the
- * digest it is missing from, or every later admission would fail on `marker integrity` until a manual repair. While
- * the durable digest still names the previous set, the marker is removed; once the new digest is in place (only its
- * folder sync failed), marker and digest agree and both stay. If neither holds, the store fails closed as before.
- */
-function rollBackMarker(
-  marker: string,
-  dir: string,
-  integrityPath: string,
-  previousDigest: string,
-  cause: unknown,
-): void {
-  try {
-    if (readFileSync(integrityPath, 'utf8') !== previousDigest) return;
-    unlinkSync(marker);
-    syncDirectory(dir);
-  } catch (rollbackError) {
-    throw new AggregateError([cause, rollbackError], 'E_REPLAY_STATE claim rollback failed', { cause: rollbackError });
-  }
-}
-
-/**
- * The durable digest of the live markers: the UUIDv7 names, lowercased, at or after `floor`. Only they can refuse a
- * request, so a marker below the floor (expired), a legacy name or a second casing never makes the store disagree.
- */
-function floorDigest(floor: number, names: Iterable<string>): string {
-  return `${String(floor)} ${sha256Hex([...new Set(names)].sort())}\n`;
-}
-
-const FLOORED_DIGEST = /^(-?(?:0|[1-9][0-9]*)) ([0-9a-f]{64})\n$/;
-
-/** What the marker directory must hash to for the stored digest: by its floor, or every name for a pre-floor digest. */
-function expectedDigest(stored: string, markerNames: string[]): string {
-  const floored = FLOORED_DIGEST.exec(stored);
-  if (!floored) return `${sha256Hex([...markerNames].sort())}\n`;
-  const floor = Number(floored[1]);
-  const live = markerNames.flatMap((name) => {
-    const time = uuidv7Timestamp(name);
-    return time !== undefined && time >= floor ? [name.toLowerCase()] : [];
-  });
-  return floorDigest(floor, live);
-}
-
-/** Never removes a lock another process has since taken over. */
-function releaseReplayLock(lock: string): void {
-  if (lockOwner(lock) === REPLAY_LOCK_OWNER) rmSync(lock, { recursive: true, force: true });
-}
-
 /** Everything a node keeps on disk under DROP_HOME. Private keys and the local token are mode 0600. */
 export class DropHome {
   readonly root: string;
+  private replay: ReplayStore | undefined;
 
   constructor(root: string = defaultHome()) {
     this.root = root;
@@ -358,134 +214,13 @@ export class DropHome {
     writePrivate(join(this.root, 'local-token'), randomBytes(32).toString('base64url'));
   }
 
-  /** Bounded, durable tombstones: a past consent cannot be regained after restart or clock rollback. */
-  claimDrop(dropId: string, now: number = Date.now()): DropClaim {
-    const timestamp = uuidv7Timestamp(dropId);
-    if (timestamp === undefined || !Number.isSafeInteger(now) || now < 0) return 'expired';
-    const canonicalDropId = dropId.toLowerCase();
-    const lock = join(this.root, 'received-drops.lock');
-    acquireReplayLock(lock);
-    try {
-      return this.claimDropLocked(canonicalDropId, now, timestamp);
-    } finally {
-      releaseReplayLock(lock);
-    }
-  }
-
-  private claimDropLocked(dropId: string, now: number, timestamp: number): DropClaim {
-    const dir = join(this.root, 'received-drops');
-    const clockPath = join(this.root, 'received-drops-clock');
-    const versionPath = join(this.root, 'received-drops-version');
-    const integrityPath = join(this.root, 'received-drops-integrity');
-    const journalPath = join(this.root, 'received-drops-migrating');
-    const clockExists = existsSync(clockPath);
-    const versionExists = existsSync(versionPath);
-    // A first migration (fresh or pre-T3.1b home) writes clock, digest and version in turn. Its journal, written first
-    // and removed last, lets an interrupted one start again instead of refusing every later admission (T3.1b review).
-    let migrating = !versionExists && existsSync(journalPath);
-    const integrityFound = existsSync(integrityPath);
-    if (!versionExists && !migrating && (clockExists || integrityFound))
-      throw new Error('E_REPLAY_STATE missing version');
-    // The clock/version prove that this home has admitted requests. Recreating a lost marker directory would
-    // silently reopen consent for a recent request whose tombstone was in that directory.
-    if (!existsSync(dir) && (clockExists || versionExists)) throw new Error('E_REPLAY_STATE missing markers');
-    if (!versionExists && !migrating) {
-      writeDurablePrivate(journalPath, '');
-      migrating = true;
-    }
-    // A digest left by an interrupted first migration is recomputed: nothing before it could be verified anyway.
-    const integrityExists = integrityFound && !migrating;
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const version = versionExists ? readFileSync(versionPath, 'utf8') : undefined;
-    if (versionExists) {
-      if (version !== '1\n' && version !== '2\n') throw new Error('E_REPLAY_STATE corrupt version');
-      if (!clockExists) throw new Error('E_REPLAY_STATE missing clock');
-    }
-    if (version === '2\n' && !integrityExists) throw new Error('E_REPLAY_STATE missing integrity');
-    let highWater = 0;
-    if (clockExists) {
-      const raw = readFileSync(clockPath, 'utf8').trim();
-      if (!/^(0|[1-9][0-9]*)$/.test(raw)) throw new Error('E_REPLAY_STATE corrupt clock');
-      highWater = Number(raw);
-      if (!Number.isSafeInteger(highWater)) throw new Error('E_REPLAY_STATE corrupt clock');
-    }
-    if (now > highWater || !clockExists) {
-      highWater = Math.max(now, highWater);
-      writeDurablePrivate(clockPath, `${String(highWater)}\n`);
-    }
-    const floor = highWater - REPLAY_WINDOW_MS;
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const markerNames = entries.filter((entry) => UUID_SHAPE.test(entry.name)).map((entry) => entry.name);
-    let digest = integrityExists ? readFileSync(integrityPath, 'utf8') : undefined;
-    if (digest !== undefined && digest !== expectedDigest(digest, markerNames)) {
-      throw new Error('E_REPLAY_STATE marker integrity');
-    }
-    // Plan the pruning before touching anything: the digest of what remains is made durable first, so a failure or a
-    // crash part-way leaves only expired, legacy or differently cased names behind, which the digest ignores.
-    const names = new Set(entries.map((entry) => entry.name));
-    const retained = new Set<string>();
-    const removals: string[] = [];
-    const renames: [string, string][] = [];
-    for (const entry of entries) {
-      // Finder, backup and sync tools may drop their own files here; only UUID-shaped names are markers.
-      if (!UUID_SHAPE.test(entry.name)) continue;
-      if (!entry.isFile()) throw new Error('E_REPLAY_STATE unexpected marker');
-      const markerTime = uuidv7Timestamp(entry.name);
-      if (markerTime === undefined) {
-        // Pre-T3.1b claims (anything z.uuid() accepted, nil and max included) cannot be admitted by the new protocol.
-        if (!LEGACY_MARKER.test(entry.name)) throw new Error('E_REPLAY_STATE unexpected marker');
-        removals.push(entry.name);
-      } else if (markerTime < floor) {
-        removals.push(entry.name);
-      } else {
-        const canonicalName = entry.name.toLowerCase();
-        if (retained.has(canonicalName) || (entry.name !== canonicalName && names.has(canonicalName))) {
-          removals.push(entry.name);
-          continue;
-        }
-        retained.add(canonicalName);
-        if (entry.name !== canonicalName) renames.push([entry.name, canonicalName]);
-      }
-    }
-    const pruning = removals.length > 0 || renames.length > 0;
-    if (pruning || digest === undefined || !FLOORED_DIGEST.test(digest)) {
-      digest = floorDigest(floor, retained);
-      writeDurablePrivate(integrityPath, digest);
-    }
-    for (const name of removals) unlinkSync(join(dir, name));
-    for (const [from, to] of renames) renameSync(join(dir, from), join(dir, to));
-    if (pruning) syncDirectory(dir);
-    // Version 1 is upgraded only after the marker-set digest is durable. A crash between the two writes is safe:
-    // the next admission verifies the digest even while the version still says 1.
-    if (version !== '2\n') writeDurablePrivate(versionPath, '2\n');
-    if (existsSync(journalPath)) {
-      unlinkSync(journalPath);
-      syncDirectory(this.root);
-    }
-    if (timestamp < floor || timestamp > highWater + MAX_CLOCK_SKEW_MS) return 'expired';
-    if (existsSync(join(dir, dropId))) return 'duplicate';
-    if (retained.size >= MAX_RECEIVED_DROPS) return 'capacity';
-    const marker = join(dir, dropId);
-    let fd: number;
-    try {
-      fd = openSync(marker, 'wx', 0o600);
-    } catch (error) {
-      if (errorCode(error) === 'EEXIST') return 'duplicate';
-      throw error;
-    }
-    try {
-      try {
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      syncDirectory(dir);
-      writeDurablePrivate(integrityPath, floorDigest(floor, [...retained, dropId]));
-      return 'claimed';
-    } catch (error) {
-      rollBackMarker(marker, dir, integrityPath, digest, error);
-      throw error;
-    }
+  /**
+   * Bounded, durable tombstones (T3.1b, T3.1e): a past consent cannot be regained after restart, crash or clock
+   * rollback, and one peer cannot hold more than its share of the store.
+   */
+  claimDrop(dropId: string, now: number = Date.now(), peer = ''): DropClaim {
+    this.replay ??= new ReplayStore(this.root);
+    return this.replay.claim(dropId, now, peer);
   }
 
   /** Narrows the peer and team files left wider by a version before T4.15; called by the daemon at start. */

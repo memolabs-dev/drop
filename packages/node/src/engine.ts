@@ -98,12 +98,14 @@ function coalescedKind(type: Message['type']): CoalescedKind | undefined {
   return (COALESCED_KINDS as readonly string[]).includes(type) ? (type as CoalescedKind) : undefined;
 }
 
-export type DropClaim = 'claimed' | 'duplicate' | 'expired' | 'capacity';
+/** What the durable replay store answers; 'peer_quota' is a full share for the sending peer (T3.1e). */
+export type DropClaim = 'claimed' | 'duplicate' | 'expired' | 'capacity' | 'peer_quota';
 
 const CLAIM_ERRORS: Record<Exclude<DropClaim, 'claimed'>, { code: DropErrorCode; message: string }> = {
   duplicate: { code: 'E_DENIED', message: 'Demande déjà reçue ; créez une nouvelle demande.' },
   expired: { code: 'E_EXPIRED', message: 'Demande expirée ou horloge désynchronisée.' },
   capacity: { code: 'E_RATE', message: 'Trop de demandes reçues ; réessayez plus tard.' },
+  peer_quota: { code: 'E_RATE', message: 'Trop de demandes reçues ; réessayez plus tard.' },
 };
 
 /** What a requester learns when the transport refuses its drop request for good, by the transport's outcome. */
@@ -147,10 +149,11 @@ const ERROR_STATE: Partial<Record<DropErrorCode, DropState>> = {
 export interface NodeStore {
   /**
    * Persistent anti-replay: 'duplicate' for a known id, 'expired' outside the freshness window measured against a
-   * durable high-water clock, 'capacity' when the bounded store is full. A throw (lock, corruption, I/O) is treated
-   * by the engine as 'capacity', so the request is refused before consent.
+   * durable high-water clock, 'capacity' when the bounded store is full, 'peer_quota' when the sending peer holds its
+   * full share of it (T3.1e). A throw (lock, corruption, I/O) is treated by the engine as 'capacity', so the request
+   * is refused before consent.
    */
-  claimDrop?(dropId: string, now: number): DropClaim;
+  claimDrop?(dropId: string, now: number, peer: NodeId): DropClaim;
   peers(): Peer[];
   savePeer(peer: Peer): void;
   published(): Published[];
@@ -1353,7 +1356,7 @@ export class NodeEngine extends EventEmitter {
     if (this.options.store.claimDrop) {
       let claim: DropClaim;
       try {
-        claim = this.options.store.claimDrop(dropId, now);
+        claim = this.options.store.claimDrop(dropId, now, from);
       } catch (error) {
         this.log({
           event: 'drop_rejected',
@@ -1362,7 +1365,7 @@ export class NodeEngine extends EventEmitter {
           dropId,
           peer: from,
         });
-        claim = 'capacity';
+        return CLAIM_ERRORS.capacity;
       }
       if (claim === 'expired') {
         // The id passed the wall-clock window above, so only a persisted replay clock ahead of it can refuse it.
@@ -1370,6 +1373,15 @@ export class NodeEngine extends EventEmitter {
           event: 'drop_rejected',
           code: 'E_EXPIRED',
           reason: 'replay_clock_ahead',
+          dropId,
+          peer: from,
+        });
+      }
+      if (claim === 'capacity' || claim === 'peer_quota') {
+        this.log({
+          event: 'drop_rejected',
+          code: 'E_RATE',
+          reason: claim === 'peer_quota' ? 'replay_peer_quota' : 'replay_capacity',
           dropId,
           peer: from,
         });
