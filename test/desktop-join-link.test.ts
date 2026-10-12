@@ -29,3 +29,36 @@ describe('default relay (T4.33)', () => {
     expect(rust).toContain(`const DEFAULT_RELAY: &str = "${DEFAULT_RELAY_URL}";`);
   });
 });
+
+// Windows and Linux start a new process for each drop:// link (v2.tauri.app/plugin/deep-linking). PR #45 made the first
+// instance receive them; an AppImage, which nothing installs, still had to register the scheme itself (T4.31).
+describe('desktop single instance (T4.31)', () => {
+  it('hands a drop:// link to the running app on Windows and Linux, and registers the scheme from an AppImage', () => {
+    const tauri = join(process.cwd(), 'apps/desktop/src-tauri');
+    const rust = readFileSync(join(tauri, 'src/main.rs'), 'utf8');
+    const cargo = readFileSync(join(tauri, 'Cargo.toml'), 'utf8');
+    const config = JSON.parse(readFileSync(join(tauri, 'tauri.conf.json'), 'utf8')) as {
+      plugins: { 'deep-link': { desktop: { schemes: string[] } } };
+    };
+    // The plugin with its deep-link feature, on Windows and Linux only, for the one scheme the app declares.
+    expect(cargo).toMatch(
+      /\[target\.'cfg\(any\(windows, target_os = "linux"\)\)'\.dependencies\]\ntauri-plugin-single-instance = \{ version = "2", features = \["deep-link"\] \}/,
+    );
+    expect(config.plugins['deep-link'].desktop.schemes).toEqual(['drop']);
+    // First plugin of the builder, before deep-link: the second process hands its arguments over and exits.
+    const main = rust.slice(rust.indexOf('fn main()'));
+    const single = main.indexOf('.plugin(tauri_plugin_single_instance::init(');
+    expect(single).toBeGreaterThan(0);
+    expect(single).toBeLessThan(main.indexOf('.plugin(tauri_plugin_deep_link::init())'));
+    expect(main.slice(0, single)).not.toContain('.plugin(');
+    // Links handed over, and the link that started the app, go through the same queue as on macOS.
+    expect(main).toContain('.on_open_url(move |event| open_links(&links, event.urls()));');
+    expect(main).toContain(
+      'if let Ok(Some(urls)) = app.deep_link().get_current() {\n                open_links(&handle, urls);',
+    );
+    // An AppImage registers drop:// at each launch (its path may have moved); a failure is logged, the app goes on.
+    expect(main).toContain('#[cfg(target_os = "linux")]\n            if app.env().appimage.is_some() {');
+    expect(main).toContain('if let Err(error) = app.deep_link().register_all() {');
+    expect(main).toContain('log_error("E_DEEP_LINK", &error.to_string());');
+  });
+});

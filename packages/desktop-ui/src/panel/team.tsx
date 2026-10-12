@@ -1,4 +1,4 @@
-/** « Équipe »: create the team, see who is online and what they share, invite with a one-time link. */
+/** « Équipe »: create the team, see who is online and what they share, invite with a one-time https link. */
 import { useState } from 'react';
 import { Copy, UserPlus } from 'lucide-react';
 import { api } from '../api.ts';
@@ -116,9 +116,10 @@ export function TeamTab({ data, reload }: { data: TeamData; reload: () => void }
         onClick={() => {
           setBusy(true);
           setCopyFailed(false);
-          api<{ code: string }>('POST', '/ui/invite')
+          // One https link that works without the app (T4.23, T4.31): the join page installs drop, then opens it.
+          api<{ code: string; link: string }>('POST', '/ui/invite')
             .then((result) => {
-              setLink('drop://pair?code=' + encodeURIComponent(result.code));
+              setLink(result.link);
               panel.focusTo('team:copy');
             })
             .catch((error: unknown) => {
@@ -134,7 +135,10 @@ export function TeamTab({ data, reload }: { data: TeamData; reload: () => void }
       </Button>
       {link ? (
         <div className="panel-surface flex flex-col gap-2.5 rounded-2xl border border-border bg-card p-3.5">
-          <Muted>Envoie ce lien, valable 24 h, une seule fois :</Muted>
+          <Muted>
+            Envoie ce lien, valable 24 h, une seule fois, pour une seule personne. Il ouvre une page pour installer
+            drop, puis ouvre drop sur l’invitation.
+          </Muted>
           <code className="selectable block rounded-xl bg-muted px-3 py-2 font-mono text-[11px] leading-snug break-all whitespace-pre-wrap">
             {link}
           </code>

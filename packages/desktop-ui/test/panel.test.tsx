@@ -360,13 +360,15 @@ describe('menu bar panel and its admin routes (T2.4)', () => {
       'Action impossible. Réessaie dans un instant.',
     );
     expect(text()).not.toMatch(/\binternal\b/);
-    route('POST /ui/invite', { body: { code: 'code-fictif' } });
+    route('POST /ui/invite', {
+      body: { code: 'code-fictif', link: 'https://drop.memolabs.dev/join#code-fictif', validHours: 24 },
+    });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: () => Promise.reject(new Error('denied')) },
     });
     await click(button('Inviter quelqu’un dans l’équipe'));
-    await until(() => text().includes('drop://pair?code=code-fictif'), 'invite link');
+    await until(() => text().includes('https://drop.memolabs.dev/join#code-fictif'), 'invite link');
     await click(button('Copier le lien'));
     await until(() => text().includes('Copie impossible'), 'copy failure');
     expect(
@@ -491,6 +493,107 @@ describe('menu bar panel and its admin routes (T4.14)', () => {
     await click(button('Envoyer : État des tickets'));
     expect(posted('/ui/review')[0]?.body).toBe('dropId=' + REVIEW + '&decision=send&redact=responsable');
     expect(reviewForm(REVIEW, 'discard', ['x']).toString()).toBe('dropId=' + REVIEW + '&decision=discard');
+  });
+});
+
+// ---- one-link join follow-ups (T4.31): the https link to send, then « Connecter mes agents » after « Rejoindre » ----
+
+describe('menu bar panel (T4.31)', () => {
+  const atlas = {
+    body: {
+      team: { name: 'Atlas' },
+      members: [{ nodeId: 'a', displayName: 'Camille', self: true, online: true, agents: [], capabilities: [] }],
+    },
+  };
+
+  it('gives the https join link to send, never drop://pair', async () => {
+    const link = 'https://drop.memolabs.dev/join#ZXlKcGJuWnBkR1VpT2lKbWFXTjBhV1lpZlEtZmljdGlm';
+    route('GET /ui/team', atlas);
+    route('POST /ui/invite', { body: { code: 'ZXlKcGJuWnBkR1VpT2lKbWFXTjBhV1lpZlEtZmljdGlm', link, validHours: 24 } });
+    const copied: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: (value: string) => {
+          copied.push(value);
+          return Promise.resolve();
+        },
+      },
+    });
+    await mount();
+    await openTab('Équipe');
+    await until(() => text().includes('Atlas · 1 membres, 1 en ligne'), 'team');
+    await click(button('Inviter quelqu’un dans l’équipe'));
+    await until(() => text().includes(link), 'https link');
+    expect(posted('/ui/invite')).toHaveLength(1);
+    expect(document.querySelector('code')?.textContent).toBe(link);
+    // What the link does, so the inviter knows it works for someone who has no drop yet.
+    expect(text()).toContain('valable 24 h, une seule fois, pour une seule personne');
+    expect(text()).toContain('installer drop');
+    expect(text()).not.toContain('drop://');
+    await click(button('Copier le lien'));
+    expect(copied).toEqual([link]);
+  });
+
+  it('offers Connecter mes agents after Rejoindre, then analyses this computer on one click', async () => {
+    route('POST /ui/pair/preview', {
+      body: { displayName: 'Julie', team: 'Atlas', relayHost: '<b>relais.example:8443</b>', relay: 'adopt' },
+    });
+    route('POST /ui/pair', { body: { nodeId: 'julie', relay: 'adopt', next: 'connect_agents' } });
+    route('GET /ui/team', atlas);
+    route('GET /ui/admin/onboarding', {
+      body: {
+        agents: [
+          {
+            agent: 'cursor',
+            label: 'Cursor',
+            state: 'ready',
+            fingerprint: 'a'.repeat(64),
+            detail: 'Ajout du connecteur',
+          },
+        ],
+      },
+    });
+    route('GET /ui/admin/projects', { body: { projects: [] } });
+    route('POST /ui/admin/onboarding', {
+      body: { results: [{ agent: 'cursor', state: 'connected', detail: 'Configuration modifiée' }] },
+    });
+    await mount('&pair=code-fictif');
+    await until(() => text().includes('Julie t’invite dans l’équipe Atlas'), 'invite card');
+    await click(button('Rejoindre'));
+    await until(() => text().includes('Prochaine étape'), 'next step');
+    // The relay this node just moved to is named, as text; nothing is analysed or connected before the click.
+    expect(text()).toContain('Ton app passe maintenant par le relais <b>relais.example:8443</b>');
+    expect(host?.querySelector('b')).toBeNull();
+    expect(calls.some((call) => call.path === '/ui/admin/onboarding')).toBe(false);
+    await click(button('Connecter mes agents'));
+    await until(() => text().includes('Résultat de l’analyse'), 'analysis');
+    expect(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Mes outils');
+    expect(calls.filter((call) => call.method === 'GET' && call.path === '/ui/admin/onboarding')).toHaveLength(1);
+    expect(text()).not.toContain('Prochaine étape');
+    // Connecting stays the second, explicit action.
+    expect(posted('/ui/admin/onboarding')).toHaveLength(0);
+    await click(button('2. Connecter les agents sélectionnés'));
+    expect(JSON.parse(posted('/ui/admin/onboarding')[0]?.body ?? '{}')).toEqual({
+      selections: [{ agent: 'cursor', fingerprint: 'a'.repeat(64), action: 'connect' }],
+    });
+
+    // « Plus tard »: the offer goes away, nothing is analysed; a node that kept its relay names none.
+    await step(() => {
+      root?.unmount();
+    });
+    host?.remove();
+    calls = [];
+    route('POST /ui/pair', { body: { nodeId: 'julie', relay: 'same', next: 'connect_agents' } });
+    await mount('&pair=code-fictif');
+    await until(() => text().includes('Julie t’invite dans l’équipe Atlas'), 'second card');
+    await click(button('Rejoindre'));
+    await until(() => text().includes('Prochaine étape'), 'second next step');
+    expect(text()).not.toContain('passe maintenant par le relais');
+    await click(button('Plus tard'));
+    expect(text()).not.toContain('Prochaine étape');
+    await settle(30);
+    expect(calls.some((call) => call.path === '/ui/admin/onboarding')).toBe(false);
   });
 });
 

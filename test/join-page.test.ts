@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createInvite, encodeInvite, generateIdentity } from '../packages/protocol/src/index.ts';
-import { collectSite, joinCsp, startSite } from '../scripts/site.ts';
+import { buildSite, collectSite, joinCsp, startSite } from '../scripts/site.ts';
 
 interface Stub {
   textContent: string;
@@ -224,5 +227,38 @@ describe('join page (T4.23)', () => {
     expect(runJoinScript(script, `#${spoof}`, MAC).byId('join-title').textContent).toBe(
       'Guillaume<b> t’invite dans l’équipe AB',
     );
+  });
+});
+
+// The public site is a static export behind nginx on the VPS (D77), which sends `script-src 'none'` everywhere: the
+// join page needs its own header there, and its script hash changes with every edit of the page (T4.31).
+describe('join page (T4.31)', () => {
+  it('writes the join page policy next to the static export, outside the published files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'drop-site-headers-'));
+    const out = join(root, 'site');
+    const preview = await startSite(await collectSite({ installs: 'beta', contact: '' }), 0);
+    try {
+      await buildSite(out, { installs: 'beta', contact: '' });
+      expect(await readdir(root)).toEqual(['site', 'site-headers.json']);
+      const headers = JSON.parse(await readFile(join(root, 'site-headers.json'), 'utf8')) as {
+        default: string;
+        paths: Record<string, string>;
+      };
+      expect(headers.default).toContain("script-src 'none'");
+      expect(Object.keys(headers.paths).sort()).toEqual(['/join', '/join.html', '/join/', '/join/index.html']);
+      for (const [path, policy] of Object.entries(headers.paths)) {
+        // Exactly what `serve` sends, frame-ancestors included, which the page's meta copy cannot carry.
+        const served = (await fetch(`${preview.url}${path}`)).headers.get('content-security-policy');
+        expect(policy, path).toBe(served);
+        expect(policy, path).toContain("frame-ancestors 'none'");
+        expect(policy, path).toMatch(/script-src 'sha256-[A-Za-z0-9+/]+=*'/);
+      }
+      // Never published: no exported file holds it.
+      const published = await readdir(out, { recursive: true });
+      expect(published.some((name) => name.includes('headers'))).toBe(false);
+    } finally {
+      await preview.stop();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

@@ -70,7 +70,7 @@ Les sauvegardes locales sont privées, versionnées et limitées à trois par fi
 
 ### Rejoindre une équipe par un seul lien (T4.23, D95)
 
-Côté inviteur, « Inviter quelqu'un » (Mon espace, Équipe) ou `drop invite --link` donne un lien de la forme `https://drop.memolabs.dev/join#<invitation>`. Il vaut 24 h, sert une seule fois, pour une seule personne. L'invitation est signée par le Node de l'inviteur et porte son nom, celui de l'équipe, l'adresse du relais (`wss://drop.memolabs.dev/v1` pour l'essai) et un ticket d'admission à ce relais. Elle est dans la partie du lien après `#`, qu'un navigateur n'envoie jamais au site. Le Node de l'inviteur garde ses invitations vivantes : un lien envoyé reste valable si son Mac redémarre.
+Côté inviteur, « Inviter quelqu'un » (Mon espace, Équipe), « Inviter quelqu’un dans l’équipe » (panneau de la barre de menus, onglet Équipe) ou `drop invite --link` donne un lien de la forme `https://drop.memolabs.dev/join#<invitation>`. Il vaut 24 h, sert une seule fois, pour une seule personne. L'invitation est signée par le Node de l'inviteur et porte son nom, celui de l'équipe, l'adresse du relais (`wss://drop.memolabs.dev/v1` pour l'essai) et un ticket d'admission à ce relais. Elle est dans la partie du lien après `#`, qu'un navigateur n'envoie jamais au site. Le Node de l'inviteur garde ses invitations vivantes : un lien envoyé reste valable si son Mac redémarre.
 
 Côté invité :
 
@@ -78,13 +78,15 @@ Côté invité :
 2. Installer drop et l'ouvrir une fois.
 3. Cliquer sur « J'ai installé drop : rejoindre l'équipe ». drop s'ouvre sur la carte de confirmation : qui invite, quelle équipe, « Rejoindre » ou « Refuser ». Rien n'est envoyé avant « Rejoindre ».
 4. « Rejoindre » : un poste qui n'a encore rejoint personne et qui est encore sur le relais de bouclage par défaut (`ws://127.0.0.1:7780/v1`) passe au relais de l'invitation, y est admis par le ticket, puis apparaît dans l'équipe. Un poste déjà relié, ou réglé à la main sur un autre relais, garde son relais (T4.33). Le relais adopté n'entre pas dans les destinations privées (`network.origins`) : seul le Node lui parle, jamais le modèle ni un serveur MCP ; `config.json` porte alors `relayAdopted: true`.
-5. Connecter ses agents (Agents, « Analyser cet ordinateur », puis « Connecter »), comme décrit plus haut.
+5. Connecter ses agents. Dans le panneau, une carte « Prochaine étape » suit « Rejoindre » : « Connecter mes agents » ouvre « Mes outils » et analyse l'ordinateur sans rien modifier, puis « Connecter les agents sélectionnés » raccorde ceux qui restent cochés (T4.31). Quand le poste vient de passer au relais de l'invitation, la carte le nomme. Dans Mon espace : Agents, « Analyser cet ordinateur », puis « Connecter », comme décrit plus haut.
 
 Si le bouton ne fait rien, la page donne le code à copier : dans drop, Mon espace, Équipe, « J'ai reçu une invitation », coller le code ou le lien entier. En ligne de commande : `drop join <code-ou-lien>`.
 
 Refus possibles, chacun avec son code : invitation illisible (`E_INVITE`), expirée (`E_INVITE_EXPIRED`), modifiée depuis son envoi (`E_INVITE_SIG`), déjà utilisée (`E_INVITE_USED`), relais non autorisé sur ce poste (`E_INVITE_RELAY` : `ws:` seulement vers une adresse privée, `wss:` vers une adresse privée ou un nom DNS, puis la liste de la politique d'organisation), configuration de drop verrouillée par une autre opération (`E_LOCKED`) ou modifiée pendant « Rejoindre » (`E_CONFLICT`) ; dans ces deux derniers cas l'invitation reste valable et il suffit de réessayer.
 
-Un lien `drop://pair` (T4.14) ouvre la même carte (`packages/desktop-ui/src/panel/`). Le panneau de la barre de menus, passé à React en T4.24, donne encore ce lien-là et ne propose pas « Connecter mes agents » après « Rejoindre » : ces suites restent dans T4.31.
+Un lien `drop://pair` (T4.14) ouvre la même carte (`packages/desktop-ui/src/panel/`) ; plus aucun écran de drop n'en donne à envoyer (T4.31).
+
+Sous Windows et Linux, le lien `drop://join` du bouton de la page arrive à l'app déjà ouverte (instance unique, D90). Une AppImage, que rien n'installe, enregistre `drop://` pour l'utilisateur à chaque lancement ; un échec est écrit dans `~/.drop/app.log` (`E_DEEP_LINK`) et le code à copier reste le secours (T4.31).
 
 **Partager un outil, ce qui existe.** Dans « Mes outils », chaque serveur MCP partageable d'un agent installé porte un interrupteur « Partager … ». Un clic suffit (`packages/desktop-ui/src/panel/`, `packages/node/src/share.ts`) :
 

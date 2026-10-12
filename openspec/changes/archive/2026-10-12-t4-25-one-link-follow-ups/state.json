@@ -1,0 +1,15 @@
+{
+  "phase": "READY_FOR_MANUAL_ACCEPTANCE",
+  "scope": "T4.31 : suites du lien unique (lien https d'Inviter dans le panneau, Connecter mes agents après Rejoindre, drop:// enregistré par l'AppImage, politique de /join exportée pour l'hébergement statique)",
+  "requirements": { "total": 4, "covered": 4 },
+  "acceptance": { "total": 5, "verified": 4, "pending": 1, "failed": 0 },
+  "todos": { "p0_open": 0, "p1_open": 0 },
+  "risks": { "critical_open": 0, "high_open": 0 },
+  "verification": {
+    "status": "PASS",
+    "evidence": "evidence.md",
+    "manual": "lien drop://join pendant que l'app tourne sous Windows 10 et 11 et Ubuntu (AppImage, .deb), banc maison T4.6c ; configuration nginx de /join dans le dépôt d'infrastructure"
+  },
+  "open_outside_repo": ["CSP de /join sur le VPS (dépôt d'infrastructure, D77)", "liens directs vers les fichiers de release, noms non fixés"],
+  "ready_for_manual_acceptance": true
+}

@@ -186,3 +186,17 @@ export interface PendingInvite {
   relay: RelayOutcome;
   relayHost: string;
 }
+
+/** `POST /ui/pair` after « Rejoindre » (T4.23): `next` says what the owner does next, « Connecter mes agents ». */
+export interface PairResult {
+  nodeId: string;
+  relay: RelayOutcome;
+  next?: 'connect_agents';
+}
+
+/** What the panel keeps of a join that succeeded, to offer the next step (T4.31). */
+export interface JoinedInvite {
+  relay: RelayOutcome;
+  relayHost: string;
+  next?: 'connect_agents';
+}

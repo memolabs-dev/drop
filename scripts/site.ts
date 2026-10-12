@@ -154,6 +154,20 @@ export async function collectSite(config?: SiteConfig): Promise<Map<string, Buff
   return assets;
 }
 
+/**
+ * The Content-Security-Policy header of each path (T4.31): `script-src 'none'` by default, and for the join page the
+ * policy that pins its script, as `serve` sends it. A static host such as the VPS's nginx (D77) applies it as is: it
+ * cannot recompute the hash, which changes with every edit of the page.
+ */
+export function siteHeaders(assets: ReadonlyMap<string, Buffer>): { default: string; paths: Record<string, string> } {
+  const page = assets.get('/join.html');
+  if (!page) throw new Error('E_SITE_JOIN: no join page');
+  const policy = joinCsp(page.toString('utf8'));
+  const paths: Record<string, string> = {};
+  for (const path of ['/join', '/join/', ...JOIN_PAGES]) paths[path] = policy;
+  return { default: CSP, paths };
+}
+
 export async function buildSite(directory = output, config?: SiteConfig): Promise<Map<string, Buffer>> {
   const assets = await collectSite(config);
   // This is a generated output directory, never a source directory. Remove stale public output too.
@@ -163,6 +177,8 @@ export async function buildSite(directory = output, config?: SiteConfig): Promis
     await mkdir(dirname(destination), { recursive: true });
     await writeFile(destination, data);
   }
+  // Next to the export, never in it: a static host publishes the whole directory.
+  await writeFile(join(dirname(directory), 'site-headers.json'), JSON.stringify(siteHeaders(assets), null, 2) + '\n');
   return assets;
 }
 
@@ -234,9 +250,7 @@ async function serveRelease(res: ServerResponse, method: string, releasesDir: st
 }
 
 function handler(assets: ReadonlyMap<string, Buffer>, options: ServeOptions) {
-  const pagePolicies = new Map(
-    [...assets].filter(([path]) => JOIN_PAGES.has(path)).map(([path, data]) => [path, joinCsp(data.toString('utf8'))]),
-  );
+  const pagePolicies = new Map(Object.entries(siteHeaders(assets).paths));
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');

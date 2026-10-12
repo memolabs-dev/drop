@@ -160,7 +160,7 @@ Contrat : [node](../../openspec/specs/node/spec.md), exigences « Équipe » et 
 
 1. **Existant** : onglet Équipe sans équipe : « Pas encore d’équipe », champ « Nom de l’équipe », bouton « Créer l’équipe » (`packages/desktop-ui/src/panel/`).
 2. **Existant** : avec une équipe, le titre résume « Atlas · 4 membres, 2 en ligne » ; chaque membre montre ses agents, ses outils partagés et son état en ligne.
-3. **Existant** : « Inviter quelqu’un dans l’équipe » crée un lien `drop://pair?code=…` « valable 24 h, une seule fois », avec « Copier le lien » (`packages/desktop-ui/src/panel/team.tsx`, `packages/protocol/src/invite.ts`).
+3. **Existant** (T4.31) : « Inviter quelqu’un dans l’équipe » crée le lien `https://drop.memolabs.dev/join#<invitation>`, « valable 24 h, une seule fois, pour une seule personne », avec « Copier le lien » (`packages/desktop-ui/src/panel/team.tsx`, `packages/protocol/src/invite.ts`).
 4. **Hypothèse** : la personne envoie ce lien par sa messagerie habituelle ; drop ne l'envoie pas. Critère : T4.6 observe si ce geste bloque.
 5. **Existant** : l'invité clique le lien. L'app le reçoit par le plugin de liens profonds ; avant que le Node soit prêt, jusqu'à huit liens attendent (`main.rs`, `open_links`).
 6. **Existant** (T4.14) : le panneau montre qui invite et dans quelle équipe, puis attend « Rejoindre » ou « Refuser » ; rien n'est appairé avant ce clic (`packages/desktop-ui/src/panel/`).

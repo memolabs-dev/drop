@@ -1,16 +1,24 @@
 /**
- * Cards opened by a deep link. Nothing happens until the owner clicks: `drop://pair` (T4.14) pairs only after
- * « Rejoindre », `drop://link` (T2.13) links an assistant only after « Autoriser ».
+ * Cards opened by a deep link. Nothing happens until the owner clicks: `drop://pair` and `drop://join` (T4.14, T4.23)
+ * pair only after « Rejoindre », then offer « Connecter mes agents » (T4.31); `drop://link` (T2.13) links an assistant
+ * only after « Autoriser ».
  */
 import { useState } from 'react';
-import { TriangleAlert } from 'lucide-react';
+import { PlugZap, TriangleAlert } from 'lucide-react';
 import { api } from '../api.ts';
 import { Button } from '../components/ui/button.tsx';
 import { failureText, linkWarnings } from './logic.ts';
-import type { LinkRequest, PendingInvite } from './types.ts';
+import type { JoinedInvite, LinkRequest, PairResult, PendingInvite } from './types.ts';
 import { Muted, usePanel } from './ui.tsx';
 
-export function InviteCard({ invite, onDone }: { invite: PendingInvite; onDone: (joined: boolean) => void }) {
+/** `onDone` receives what « Rejoindre » did, or null when the owner refused or the Node did. */
+export function InviteCard({
+  invite,
+  onDone,
+}: {
+  invite: PendingInvite;
+  onDone: (joined: JoinedInvite | null) => void;
+}) {
   const panel = usePanel();
   const [busy, setBusy] = useState(false);
   return (
@@ -44,7 +52,7 @@ export function InviteCard({ invite, onDone }: { invite: PendingInvite; onDone: 
           autoFocus
           onClick={() => {
             panel.info('Invitation refusée.');
-            onDone(false);
+            onDone(null);
           }}
         >
           Refuser
@@ -54,19 +62,66 @@ export function InviteCard({ invite, onDone }: { invite: PendingInvite; onDone: 
           disabled={busy}
           onClick={() => {
             setBusy(true);
-            api('POST', '/ui/pair', new URLSearchParams({ code: invite.code })).then(
-              () => {
+            api<PairResult>('POST', '/ui/pair', new URLSearchParams({ code: invite.code })).then(
+              (result) => {
                 panel.info('Invitation acceptée : tu rejoins l’équipe dans quelques secondes.');
-                onDone(true);
+                onDone({
+                  relay: result.relay,
+                  relayHost: invite.relayHost,
+                  ...(result.next ? { next: result.next } : {}),
+                });
               },
               (error: unknown) => {
                 panel.fail(failureText(error));
-                onDone(false);
+                onDone(null);
               },
             );
           }}
         >
           Rejoindre
+        </Button>
+      </div>
+    </article>
+  );
+}
+
+/**
+ * After « Rejoindre », the third step of the one link (D84, T4.31): connect this computer's agents. « Connecter mes
+ * agents » only analyses, locally; connecting stays the second, explicit action of « Mes outils ».
+ */
+export function ConnectAgentsCard({
+  joined,
+  onConnect,
+  onLater,
+}: {
+  joined: JoinedInvite;
+  onConnect: () => void;
+  onLater: () => void;
+}) {
+  return (
+    <article
+      aria-labelledby="next-step-title"
+      className="panel-surface motion-arrive flex flex-col gap-3 rounded-2xl border border-primary/30 bg-card p-3.5"
+    >
+      <h2 id="next-step-title" className="m-0 text-[14px] leading-snug font-semibold">
+        Prochaine étape : connecter tes agents
+      </h2>
+      {joined.relay === 'adopt' ? (
+        <Muted className="break-words">
+          Ton app passe maintenant par le relais {joined.relayHost}, celui de ton équipe.
+        </Muted>
+      ) : null}
+      <Muted>
+        Tes agents pourront poser leurs questions à l’équipe. drop regarde d’abord quels agents sont installés sur cet
+        ordinateur, sans rien modifier ; tu choisis ensuite ceux à connecter.
+      </Muted>
+      <div className="flex justify-end gap-1.5">
+        <Button variant="secondary" size="sm" onClick={onLater}>
+          Plus tard
+        </Button>
+        <Button size="sm" data-focus="next:connect" onClick={onConnect}>
+          <PlugZap aria-hidden="true" />
+          Connecter mes agents
         </Button>
       </div>
     </article>

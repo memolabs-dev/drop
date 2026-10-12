@@ -2,7 +2,7 @@
  * « Mes outils »: what I publish, connecting my agents (analysis, then a second explicit step), project folders,
  * sharing toggles, linked assistants, who pays the model, and the Internet connection.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronRight, FolderPlus, LogIn, Plus, ScanSearch, Unplug } from 'lucide-react';
 import { api } from '../api.ts';
 import { Button } from '../components/ui/button.tsx';
@@ -82,7 +82,18 @@ interface Analysis {
   projects: ProjectView[];
 }
 
-export function ToolsTab({ data, reload }: { data: ToolsBundle; reload: () => void }) {
+/** `analyseNow`: « Connecter mes agents » was clicked after « Rejoindre » (T4.31); the analysis starts once. */
+export function ToolsTab({
+  data,
+  reload,
+  analyseNow = false,
+  onAnalyseStarted,
+}: {
+  data: ToolsBundle;
+  reload: () => void;
+  analyseNow?: boolean;
+  onAnalyseStarted?: () => void;
+}) {
   const panel = usePanel();
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [factDraft, setFactDraft] = useState<FactDraft | null>(null);
@@ -136,7 +147,13 @@ export function ToolsTab({ data, reload }: { data: ToolsBundle; reload: () => vo
         </a>
       ) : null}
       <FactsSection data={data.facts} draft={factDraft} setDraft={setFactDraft} reload={reload} />
-      <ConnectSection analysis={analysis} setAnalysis={setAnalysis} reload={reload} />
+      <ConnectSection
+        analysis={analysis}
+        setAnalysis={setAnalysis}
+        reload={reload}
+        analyseNow={analyseNow}
+        onAnalyseStarted={onAnalyseStarted}
+      />
       <SharingSection
         tools={data.tools}
         reload={reload}
@@ -480,10 +497,14 @@ function ConnectSection({
   analysis,
   setAnalysis,
   reload,
+  analyseNow,
+  onAnalyseStarted,
 }: {
   analysis: Analysis | null;
   setAnalysis: (analysis: Analysis | null) => void;
   reload: () => void;
+  analyseNow: boolean;
+  onAnalyseStarted: (() => void) | undefined;
 }) {
   const panel = usePanel();
   const [scanning, setScanning] = useState(false);
@@ -511,6 +532,14 @@ function ConnectSection({
         setScanning(false);
       });
   };
+
+  // Asked from the card shown after « Rejoindre » (T4.31): one local analysis, the request cleared at once, so that a
+  // reload of this tab never runs it again. Connecting stays the second click.
+  useEffect(() => {
+    if (!analyseNow) return;
+    onAnalyseStarted?.();
+    analyse();
+  });
 
   const apply = (selections: { agent: string; fingerprint: string; action: 'connect' | 'disconnect' }[]) => {
     const action = selections[0]?.action ?? 'connect';

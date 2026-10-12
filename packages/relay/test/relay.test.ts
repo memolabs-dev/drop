@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import { execFileSync } from 'node:child_process';
 import { pbkdf2 } from 'node:crypto';
@@ -267,6 +267,12 @@ describe('relay', () => {
   });
 
   it('restores a sender once its rate window has passed, with idle windows swept', async () => {
+    // The relay's pinger, which sweeps idle rate windows, ticks only when the test moves it, so the sweep runs exactly
+    // once, after the window has passed. Sockets and timeouts keep real time (T4.38).
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    cleanups.push(() => {
+      vi.useRealTimers();
+    });
     const alice = await generateIdentity('Alice');
     const bob = await generateIdentity('Bob');
     const clock = { now: Date.now() };
@@ -280,8 +286,12 @@ describe('relay', () => {
     const send = async () => sender.instance.send(await sealEnvelope(alice, bob.nodeId, { type: 'catalog_request' }));
     expect(await send()).toBe('queued');
     expect(await send()).toBe('E_RATE');
+    // E_RATE closes the connection; the client dials again after its backoff and authenticates anew. A fixed delay
+    // raced that reconnection and lost it under load, sending while offline (T4.38).
+    await until(() => sender.statuses.includes('disconnected'));
+    await sender.instance.waitReady();
     clock.now += 60_001;
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    vi.advanceTimersByTime(20);
     expect(await send()).toBe('queued');
     expect(await send()).toBe('E_RATE');
   });

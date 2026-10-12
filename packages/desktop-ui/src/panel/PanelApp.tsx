@@ -8,13 +8,14 @@ import { X } from 'lucide-react';
 import { api } from '../api.ts';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs.tsx';
 import { cn } from '../lib/utils.ts';
-import { InviteCard, LinkCard } from './deep-links.tsx';
+import { ConnectAgentsCard, InviteCard, LinkCard } from './deep-links.tsx';
 import { connectionStatus, failureText } from './logic.ts';
 import { RequestsTab, editing, type RequestsData } from './requests.tsx';
 import { TeamTab } from './team.tsx';
 import { ToolsTab, loadTools } from './tools.tsx';
 import type {
   InvitePreview,
+  JoinedInvite,
   LinkRequest,
   OutboundDrop,
   PanelStatus,
@@ -66,6 +67,9 @@ export default function PanelApp() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [invite, setInvite] = useState<PendingInvite | null>(null);
+  // After « Rejoindre »: « Connecter mes agents » (T4.31), which « Mes outils » turns into one analysis, then clears.
+  const [joined, setJoined] = useState<JoinedInvite | null>(null);
+  const [analyseNow, setAnalyseNow] = useState(false);
   const [linkRequest, setLinkRequest] = useState<LinkRequest | null>(deepLink.link);
   const [gateways, setGateways] = useState<string[] | null>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -295,9 +299,25 @@ export default function PanelApp() {
             {invite ? (
               <InviteCard
                 invite={invite}
-                onDone={(joined) => {
+                onDone={(result) => {
                   setInvite(null);
-                  if (joined) setTab('team');
+                  if (!result) return;
+                  setTab('team');
+                  if (result.next === 'connect_agents') setJoined(result);
+                }}
+              />
+            ) : null}
+            {joined && !exclusive ? (
+              <ConnectAgentsCard
+                joined={joined}
+                onLater={() => {
+                  setJoined(null);
+                }}
+                onConnect={() => {
+                  setJoined(null);
+                  setNotice(null);
+                  setTab('tools');
+                  setAnalyseNow(true);
                 }}
               />
             ) : null}
@@ -336,7 +356,18 @@ export default function PanelApp() {
                 className="outline-none data-[state=inactive]:hidden"
               >
                 {tools.failed && !tools.data ? <SectionError retry={tools.reload} /> : null}
-                {tools.data ? <ToolsTab data={tools.data} reload={tools.reload} /> : tools.failed ? null : <Loading />}
+                {tools.data ? (
+                  <ToolsTab
+                    data={tools.data}
+                    reload={tools.reload}
+                    analyseNow={analyseNow}
+                    onAnalyseStarted={() => {
+                      setAnalyseNow(false);
+                    }}
+                  />
+                ) : tools.failed ? null : (
+                  <Loading />
+                )}
               </TabsContent>
             </div>
           </main>

@@ -861,6 +861,15 @@ fn main() {
             // One menu builder for the first menu and the update menus.
             set_tray_menu(&handle, None, false)?;
 
+            // The .deb, NSIS and MSI installers register drop:// (tauri-bundler); nothing installs an AppImage, so it
+            // registers the scheme for this user at each launch, which also follows a moved file (v2.tauri.app/plugin/
+            // deep-linking). Without it the join page's button does nothing; its code to paste still works (T4.31).
+            #[cfg(target_os = "linux")]
+            if app.env().appimage.is_some() {
+                if let Err(error) = app.deep_link().register_all() {
+                    log_error("E_DEEP_LINK", &error.to_string());
+                }
+            }
             let links = handle.clone();
             app.deep_link()
                 .on_open_url(move |event| open_links(&links, event.urls()));

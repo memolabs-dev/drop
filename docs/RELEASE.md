@@ -138,6 +138,7 @@ L'icône s'affiche dans la barre du bureau par le protocole AppIndicator : KDE, 
 - **Menu de l'icône** : « Ouvrir le panneau », « Ouvrir mon espace », « Réessayer le démarrage », « Quitter », plus « Mettre à jour vers x.y.z » sur une build Mac à mises à jour.
 - **Démarrage avec la session** (build de release seulement) : élément d'ouverture sur macOS, clé `Run` de l'utilisateur sous Windows, entrée `~/.config/autostart` sous Linux (le chemin de l'AppImage quand l'app en vient). Désactivable dans les réglages du système.
 - **Une seule instance** sous Windows et Linux : relancer l'app, ou ouvrir un lien `drop://` pendant qu'elle tourne, passe la main à l'instance déjà ouverte, qui montre son panneau. Jamais deux daemons.
+- **Liens `drop://`** : enregistrés à l'installation par le `.dmg` (macOS), le `.deb`, l'installeur NSIS et le `.msi`. Une AppImage les enregistre pour l'utilisateur à chaque lancement (`~/.local/share/applications/drop-desktop-handler.desktop`, masqué des menus, par `register_all` du plugin deep-link) ; un échec va dans `~/.drop/app.log` avec `E_DEEP_LINK` (T4.31).
 - **Le daemon meurt avec l'app** sur les trois systèmes, même si l'app est tuée : il lit un tube que seule l'app tient ouvert (T4.18). Le test `packages/node/test/lifecycle.test.ts` tue le processus parent sur Linux, Windows et macOS en CI ; le test de fumée de chaque paquet le vérifie avec le Node embarqué.
 - **Fermer le panneau** (Alt+F4, bouton de la barre de titre sous Linux) le cache seulement ; seul « Quitter » arrête drop.
 - Les données restent dans `~/.drop` (`%USERPROFILE%\.drop` sous Windows), comme pour `drop` en ligne de commande.
@@ -146,7 +147,7 @@ L'icône s'affiche dans la barre du bureau par le protocole AppIndicator : KDE, 
 
 - Recette sur de vraies machines : Windows 10 et 11, Ubuntu GNOME et KDE, X11 et Wayland, Mac Intel. Installer, ouvrir le panneau depuis l'icône, redémarrer la session, tuer l'app depuis le gestionnaire de tâches et vérifier que le daemon s'arrête.
 - Windows : notifications natives (le daemon les passe à l'app, qui ne les affiche que sur macOS), droits du dossier `.drop` (le mode `0600` ne vaut rien sous Windows, il faut des ACL), signature de `drop-iroh.exe`.
-- Linux : enregistrer `drop://` à l'exécution pour l'AppImage (`register_all`, flux d'invitation), notifications natives.
+- Linux : notifications natives ; recette du lien `drop://join` avec une AppImage et un `.deb` (T4.31).
 - Mises à jour signées pour Windows et Linux (aujourd'hui macOS seulement).
 - Ajouter les secrets de signature, puis refaire une release.
 
