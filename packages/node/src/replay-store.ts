@@ -10,7 +10,8 @@
  *   before it returns: no rename and no directory change, so a power cut cannot undo an admission the caller saw,
  *   on Windows too, where a directory cannot be flushed.
  * - Compaction rewrites the inactive journal with the live records, the new one and generation + 1, then flushes it.
- *   Until that flush the old journal stays the valid one; a torn rewrite fails its checksum and is ignored.
+ *   Until that flush the old journal stays the valid one; a torn rewrite fails its checksum and is ignored. The old
+ *   journal is then emptied, so a single journal is valid and losing it is detected, not mistaken for an older one.
  * - An in-memory index (ids, per-peer counts, expiry heap) answers each claim; under the lock, the headers and size
  *   of both journals prove it current, or it is reloaded. A claim costs one flush, whatever the number of ids.
  * - A torn record at the end of the journal is one whose flush never returned, so it was never admitted: it is cut.
@@ -66,7 +67,8 @@ const LEGACY_MIGRATING = 'received-drops-migrating';
 const HEADER_BYTES = 114;
 const RECORD_BYTES = 67;
 const HEADER = /^drop-replay 3 ([0-9a-f]{12}) ([0-9a-f]{12}) ([0-9a-f]{8}) ([0-9a-f]{64})\n$/;
-const RECORD = /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) ([0-9a-f]{16}) ([0-9a-f]{12})\n$/;
+const RECORD =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) ([0-9a-f]{16}) ([0-9a-f]{12})\n$/;
 /** Times are written on 48 bits, like the UUIDv7 timestamp. */
 const MAX_TIME = 2 ** 48 - 1;
 
@@ -102,7 +104,10 @@ function encodeRecord(entry: ReplayEntry): string {
 export function encodeReplayJournal(gen: number, hw: number, entries: readonly ReplayEntry[]): Buffer {
   const body = entries.map(encodeRecord).join('');
   const digest = createHash('sha256').update(body, 'latin1').digest('hex');
-  return Buffer.from(`drop-replay 3 ${hex(gen, 12)} ${hex(hw, 12)} ${hex(entries.length, 8)} ${digest}\n${body}`, 'latin1');
+  return Buffer.from(
+    `drop-replay 3 ${hex(gen, 12)} ${hex(hw, 12)} ${hex(entries.length, 8)} ${digest}\n${body}`,
+    'latin1',
+  );
 }
 
 function parseRecord(text: string): ReplayEntry | undefined {
@@ -159,6 +164,20 @@ function parseJournal(bytes: Buffer): Journal | undefined {
     validBytes: offset,
     size: bytes.length,
   };
+}
+
+/** The valid journal (at most one outside a crash window): its name, generation, clock and records. For tests. */
+export function inspectReplayJournal(
+  root: string,
+): { journal: string; gen: number; hw: number; entries: ReplayEntry[] } | undefined {
+  let found: { journal: string; gen: number; hw: number; entries: ReplayEntry[] } | undefined;
+  for (const name of REPLAY_JOURNALS) {
+    const bytes = readBytes(join(root, name));
+    const journal = bytes ? parseJournal(bytes) : undefined;
+    if (journal && (!found || journal.gen > found.gen))
+      found = { journal: name, gen: journal.gen, hw: journal.hw, entries: journal.entries };
+  }
+  return found;
 }
 
 /** Live ids by UUIDv7 time, with per-peer counts; ids expire as the floor rises. */
@@ -280,7 +299,7 @@ function probe(path: string): Probe {
 }
 
 function writeAll(fd: number, bytes: Buffer, position: number): void {
-  for (let done = 0; done < bytes.length; ) {
+  for (let done = 0; done < bytes.length;) {
     const written = writeSync(fd, bytes, done, bytes.length - done, position + done);
     if (written <= 0) throw new Error('E_REPLAY_STATE short write');
     done += written;
@@ -335,7 +354,14 @@ function readLegacy(root: string, version: string | undefined, now: number): { e
   const floor = hw - REPLAY_WINDOW_MS;
   const entries = dirExists ? readdirSync(dir, { withFileTypes: true }) : [];
   const markers = entries.filter((entry) => UUID_SHAPE.test(entry.name));
-  if (digest !== undefined && digest !== expectedDigest(digest, markers.map((entry) => entry.name)))
+  if (
+    digest !== undefined &&
+    digest !==
+      expectedDigest(
+        digest,
+        markers.map((entry) => entry.name),
+      )
+  )
     throw new ReplayStateLoss('marker integrity');
   const live = new Map<string, ReplayEntry>();
   for (const entry of markers) {
@@ -544,7 +570,11 @@ export class ReplayStore {
       ) {
         if (seen.size === before.size) return cache;
         // Another process appended: read only its records.
-        if (seen.size > before.size && (seen.size - before.size) % RECORD_BYTES === 0 && this.readTail(cache, seen.size))
+        if (
+          seen.size > before.size &&
+          (seen.size - before.size) % RECORD_BYTES === 0 &&
+          this.readTail(cache, seen.size)
+        )
           return cache;
       }
       this.cache = undefined;
@@ -614,6 +644,8 @@ export class ReplayStore {
     index.hw = journal.hw;
     for (const entry of journal.entries) index.add(entry);
     const other = active === 0 ? 1 : 0;
+    // A crash between a compaction and the retirement of the journal it replaced leaves both valid: finish it.
+    if (parsed[other]) this.retire(other);
     const probes: [Probe, Probe] = [
       { header: undefined, size: -1 },
       { header: undefined, size: -1 },
@@ -742,6 +774,9 @@ export class ReplayStore {
     }
     // A journal lost since the upgrade is created again: its name must be durable before the admission returns.
     if (created) syncDirectory(this.root);
+    // Only one journal stays valid: losing it is then seen as a loss, never as a silent return to an older generation.
+    this.retire(cache.active);
+    cache.probes[cache.active] = { header: undefined, size: 0 };
     removeLockLeftovers(this.root);
     const next = new ReplayIndex();
     next.hw = index.hw;
@@ -752,12 +787,25 @@ export class ReplayStore {
     cache.probes[target] = { header: bytes.toString('latin1', 0, HEADER_BYTES), size: bytes.length };
   }
 
+  /** Empties a journal that a newer generation replaced, and flushes it. */
+  private retire(journal: 0 | 1): void {
+    const fd = openSync(this.path(REPLAY_JOURNALS[journal]), 'r+');
+    try {
+      ftruncateSync(fd, 0);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
   private rollBack(fd: number, size: number, cause: unknown): void {
     try {
       ftruncateSync(fd, size);
       fsyncSync(fd);
     } catch (rollbackError) {
-      throw new AggregateError([cause, rollbackError], 'E_REPLAY_STATE claim rollback failed', { cause: rollbackError });
+      throw new AggregateError([cause, rollbackError], 'E_REPLAY_STATE claim rollback failed', {
+        cause: rollbackError,
+      });
     }
   }
 

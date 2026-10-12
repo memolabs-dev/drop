@@ -1,5 +1,15 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -13,28 +23,12 @@ import {
   type Envelope,
   type Message,
 } from '@drop/protocol';
-import { DropHome, MAX_RECEIVED_DROPS, REPLAY_LOCK_OWNER } from '../src/home.ts';
+import { DropHome, MAX_RECEIVED_DROPS, MAX_RECEIVED_DROPS_PER_PEER, REPLAY_LOCK_OWNER } from '../src/home.ts';
+import { inspectReplayJournal, REPLAY_JOURNALS, replayLockOwner } from '../src/replay-store.ts';
 import { privateConfig } from '../src/private-config.ts';
 import { MAX_ACTIVE_EXECUTING_DROPS, NodeEngine, type EngineLogEntry } from '../src/engine.ts';
 import { fakeCapability } from './helpers.ts';
-
-const NOW = 1_791_460_000_000;
-
-/** Fills received-drops with live UUIDv7 markers sharing the timestamp of `at`. */
-function fillMarkers(root: string, at: number, count: number): void {
-  const dir = join(root, 'received-drops');
-  mkdirSync(dir, { recursive: true });
-  const prefix = uuidv7(at).slice(0, 24);
-  for (let index = 0; index < count; index += 1) {
-    writeFileSync(join(dir, `${prefix}${(index + 1).toString(16).padStart(12, '0')}`), '');
-  }
-}
-
-/** Replays a pre-integrity T3.1b home when testing the one-time version-1 migration. */
-function asVersion1ReplayHome(root: string): void {
-  unlinkSync(join(root, 'received-drops-integrity'));
-  writeFileSync(join(root, 'received-drops-version'), '1\n');
-}
+import { entries, idsAt, journalIds, NOW, writeJournalStore, writeLegacyStore } from './replay-fixtures.ts';
 
 /** One owner node on a real DropHome, a paired requester, and every reply and log line captured. */
 async function ownerNode(root: string, now = NOW) {
@@ -130,7 +124,7 @@ describe('bounded received drops', () => {
       expect(home.claimDrop(uuidv7(NOW - 30 * 60_000 - 1), NOW)).toBe('expired');
       expect(home.claimDrop(uuidv7(NOW + 5 * 60_000 + 1), NOW)).toBe('expired');
       expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      expect(readdirSync(join(root, 'received-drops')).length).toBe(1);
+      expect(journalIds(root)).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -142,10 +136,12 @@ describe('bounded received drops', () => {
       const first = new DropHome(root);
       const oldId = uuidv7(NOW);
       expect(first.claimDrop(oldId, NOW)).toBe('claimed');
-      expect(first.claimDrop(uuidv7(NOW + 31 * 60_000), NOW + 31 * 60_000)).toBe('claimed');
+      const later = NOW + 31 * 60_000;
+      expect(first.claimDrop(uuidv7(later), later)).toBe('claimed');
+      // The journal keeps the store clock: a restarted node with its clock back still refuses the expired id.
       const restarted = new DropHome(root);
       expect(restarted.claimDrop(oldId, NOW)).toBe('expired');
-      expect(readdirSync(join(root, 'received-drops'))).not.toContain(oldId);
+      expect(inspectReplayJournal(root)?.entries.at(-1)?.at).toBe(later);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -156,8 +152,10 @@ describe('bounded received drops', () => {
     try {
       const home = new DropHome(root);
       expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      writeFileSync(join(root, 'received-drops-clock'), 'corrupt');
-      expect(() => new DropHome(root).claimDrop(uuidv7(NOW + 1), NOW + 1)).toThrow('E_REPLAY_STATE');
+      // The clock lives in the journal header: a damaged header leaves no valid journal.
+      const journal = join(root, REPLAY_JOURNALS[0]);
+      writeFileSync(journal, Buffer.concat([Buffer.from('corrupt'), readFileSync(journal).subarray(7)]));
+      expect(() => new DropHome(root).claimDrop(uuidv7(NOW + 1), NOW + 1)).toThrow('E_REPLAY_STATE missing journal');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -168,11 +166,11 @@ describe('bounded received drops', () => {
     try {
       const home = new DropHome(root);
       const lock = join(root, 'received-drops.lock');
-      mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(lock, replayLockOwner(process.ppid, 'f'.repeat(16)));
       const dropId = uuidv7(NOW);
-      expect(() => home.claimDrop(dropId, NOW)).toThrow('E_REPLAY_STATE');
-      expect(readdirSync(root)).not.toContain('received-drops');
-      rmdirSync(lock);
+      expect(() => home.claimDrop(dropId, NOW)).toThrow('E_REPLAY_STATE claim locked');
+      expect(readdirSync(root)).not.toContain(REPLAY_JOURNALS[0]);
+      unlinkSync(lock);
       expect(home.claimDrop(dropId, NOW)).toBe('claimed');
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -185,39 +183,8 @@ describe('bounded received drops', () => {
       const home = new DropHome(root);
       const dropId = uuidv7(NOW);
       expect(home.claimDrop(dropId.toUpperCase(), NOW)).toBe('claimed');
-      expect(readdirSync(join(root, 'received-drops'))).toEqual([dropId]);
+      expect(journalIds(root)).toEqual([dropId]);
       expect(home.claimDrop(dropId, NOW)).toBe('duplicate');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('migrates an existing uppercase marker before admitting another request', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-case-migration-'));
-    try {
-      const home = new DropHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      const dropId = uuidv7(NOW);
-      writeFileSync(join(root, 'received-drops', dropId.toUpperCase()), '');
-      asVersion1ReplayHome(root);
-      expect(home.claimDrop(dropId, NOW)).toBe('duplicate');
-      expect(readdirSync(join(root, 'received-drops'))).toContain(dropId);
-      expect(readdirSync(join(root, 'received-drops'))).not.toContain(dropId.toUpperCase());
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('removes legacy UUIDv4 markers because new requests cannot reuse them', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-migration-'));
-    try {
-      const home = new DropHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      const legacy = '550e8400-e29b-41d4-a716-446655440000';
-      writeFileSync(join(root, 'received-drops', legacy), '');
-      asVersion1ReplayHome(root);
-      expect(home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toBe('claimed');
-      expect(readdirSync(join(root, 'received-drops'))).not.toContain(legacy);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -226,113 +193,60 @@ describe('bounded received drops', () => {
   it('refuses another claim at the marker cap', () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-cap-'));
     try {
+      writeJournalStore(
+        root,
+        NOW,
+        entries(idsAt(NOW, MAX_RECEIVED_DROPS), 'many peers', NOW).map((entry, index) => ({
+          ...entry,
+          tag: index.toString(16).padStart(16, '1'),
+        })),
+      );
       const home = new DropHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      const dir = join(root, 'received-drops');
-      const prefix = uuidv7(NOW).slice(0, 24);
-      for (let index = 1; index < 16_384; index += 1) {
-        const suffix = index.toString(16).padStart(12, '0');
-        writeFileSync(join(dir, `${prefix}${suffix}`), '');
-      }
-      asVersion1ReplayHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('capacity');
-      expect(readdirSync(dir)).toHaveLength(MAX_RECEIVED_DROPS);
+      expect(home.claimDrop(uuidv7(NOW), NOW, 'someone')).toBe('capacity');
+      expect(journalIds(root)).toHaveLength(MAX_RECEIVED_DROPS);
+      // Once they expire, the next admission compacts them away.
       const later = NOW + 31 * 60_000;
-      expect(home.claimDrop(uuidv7(later), later)).toBe('claimed');
-      expect(readdirSync(dir)).toHaveLength(1);
+      expect(home.claimDrop(uuidv7(later), later, 'someone')).toBe('claimed');
+      expect(journalIds(root)).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
+
+  it('migrates a format-2 store: live ids stay refused, uppercase ones merge, expired and pre-v7 ones go', () => {
+    const root = mkdtempSync(join(tmpdir(), 'drop-replay-migration-'));
+    try {
+      const [live, upper] = [uuidv7(NOW), uuidv7(NOW)];
+      const expired = uuidv7(NOW - 31 * 60_000);
+      writeLegacyStore(root, {
+        markers: [live, upper.toUpperCase(), expired, '550e8400-e29b-41d4-a716-446655440000'],
+        clock: NOW,
+      });
+      const home = new DropHome(root);
+      expect(home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toBe('claimed');
+      expect(home.claimDrop(live, NOW + 1)).toBe('duplicate');
+      expect(home.claimDrop(upper, NOW + 1)).toBe('duplicate');
+      expect(home.claimDrop(expired, NOW + 1)).toBe('expired');
+      expect(journalIds(root)).toEqual(expect.arrayContaining([live, upper]));
+      expect(journalIds(root)).toHaveLength(3);
+      for (const name of ['received-drops', 'received-drops-clock', 'received-drops-integrity'])
+        expect(readdirSync(root)).not.toContain(name);
+      expect(readFileSync(join(root, 'received-drops-version'), 'utf8')).toBe('3\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('deletes legacy nil and max UUID markers instead of blocking admission', () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-nil-'));
     try {
-      const home = new DropHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      const legacy = ['00000000-0000-0000-0000-000000000000', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'];
-      for (const name of legacy) writeFileSync(join(root, 'received-drops', name), '');
-      asVersion1ReplayHome(root);
-      expect(home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toBe('claimed');
-      for (const name of legacy) expect(readdirSync(join(root, 'received-drops'))).not.toContain(name);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed if the durable replay clock disappears after migration and pruning', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-missing-clock-'));
-    try {
-      const home = new DropHome(root);
-      const dropId = uuidv7(NOW);
-      expect(home.claimDrop(dropId, NOW)).toBe('claimed');
-      const later = NOW + 31 * 60_000;
-      expect(home.claimDrop(uuidv7(later), later)).toBe('claimed');
-      expect(readdirSync(join(root, 'received-drops'))).not.toContain(dropId);
-      unlinkSync(join(root, 'received-drops-clock'));
-      expect(() => home.claimDrop(dropId, NOW)).toThrow('E_REPLAY_STATE missing clock');
-      expect(readdirSync(join(root, 'received-drops'))).not.toContain(dropId);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed if the marker directory disappears after a durable claim', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-missing-markers-'));
-    try {
-      const home = new DropHome(root);
-      const dropId = uuidv7(NOW);
-      expect(home.claimDrop(dropId, NOW)).toBe('claimed');
-      rmSync(join(root, 'received-drops'), { recursive: true });
-      expect(() => new DropHome(root).claimDrop(dropId, NOW)).toThrow('E_REPLAY_STATE missing markers');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed if one recent marker disappears while the directory remains', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-missing-marker-'));
-    try {
-      const home = new DropHome(root);
-      const dropId = uuidv7(NOW);
-      expect(home.claimDrop(dropId, NOW)).toBe('claimed');
-      unlinkSync(join(root, 'received-drops', dropId));
-      expect(() => new DropHome(root).claimDrop(dropId, NOW)).toThrow('E_REPLAY_STATE marker integrity');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('fails closed if replay version and clock disappear while integrity remains', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-missing-version-'));
-    try {
-      const home = new DropHome(root);
-      const dropId = uuidv7(NOW);
-      expect(home.claimDrop(dropId, NOW)).toBe('claimed');
-      const later = NOW + 31 * 60_000;
-      expect(home.claimDrop(uuidv7(later), later)).toBe('claimed');
-      expect(readdirSync(join(root, 'received-drops'))).not.toContain(dropId);
-      unlinkSync(join(root, 'received-drops-version'));
-      unlinkSync(join(root, 'received-drops-clock'));
-      expect(() => new DropHome(root).claimDrop(dropId, NOW)).toThrow('E_REPLAY_STATE missing version');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it('verifies a digest written before floors, then rewrites it with its floor and keeps detecting a lost marker', () => {
-    const root = mkdtempSync(join(tmpdir(), 'drop-replay-legacy-digest-'));
-    try {
-      const home = new DropHome(root);
-      const first = uuidv7(NOW);
-      expect(home.claimDrop(first, NOW)).toBe('claimed');
-      const markers = readdirSync(join(root, 'received-drops')).sort();
-      writeFileSync(join(root, 'received-drops-integrity'), `${sha256Hex(markers)}\n`);
-      const second = uuidv7(NOW + 1);
-      expect(home.claimDrop(second, NOW + 1)).toBe('claimed');
-      expect(home.claimDrop(first, NOW + 2)).toBe('duplicate');
-      unlinkSync(join(root, 'received-drops', second));
-      expect(() => home.claimDrop(second, NOW + 3)).toThrow('E_REPLAY_STATE marker integrity');
+      writeLegacyStore(root, {
+        markers: ['00000000-0000-0000-0000-000000000000', 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'],
+        clock: NOW,
+        version: '1',
+      });
+      expect(new DropHome(root).claimDrop(uuidv7(NOW + 1), NOW + 1)).toBe('claimed');
+      expect(journalIds(root)).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -341,14 +255,13 @@ describe('bounded received drops', () => {
   it('ignores operating system and foreign entries in the marker directory', () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-foreign-'));
     try {
+      const live = uuidv7(NOW);
+      writeLegacyStore(root, { markers: [live, '.DS_Store', '._backup'], clock: NOW });
+      mkdirSync(join(root, 'received-drops', 'Archive'));
       const home = new DropHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      const dir = join(root, 'received-drops');
-      writeFileSync(join(dir, '.DS_Store'), '');
-      writeFileSync(join(dir, '._backup'), '');
-      mkdirSync(join(dir, 'Archive'));
       expect(home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toBe('claimed');
-      expect(readdirSync(dir)).toEqual(expect.arrayContaining(['.DS_Store', '._backup', 'Archive']));
+      expect(home.claimDrop(live, NOW + 2)).toBe('duplicate');
+      expect(journalIds(root)).toHaveLength(2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -357,12 +270,81 @@ describe('bounded received drops', () => {
   it('still fails closed on a marker-shaped entry that is not a file', () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-marker-dir-'));
     try {
-      const home = new DropHome(root);
-      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
+      writeLegacyStore(root, { markers: [], clock: NOW, version: '1' });
       mkdirSync(join(root, 'received-drops', uuidv7(NOW)));
-      expect(() => home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toThrow('E_REPLAY_STATE');
+      expect(() => new DropHome(root).claimDrop(uuidv7(NOW + 1), NOW + 1)).toThrow('E_REPLAY_STATE unexpected marker');
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('quarantines a format-2 store that lost its clock, its markers, one live marker or its version', () => {
+    const live = uuidv7(NOW);
+    const cases: [string, (root: string) => void][] = [
+      [
+        'missing clock',
+        (root) => {
+          unlinkSync(join(root, 'received-drops-clock'));
+        },
+      ],
+      [
+        'missing markers',
+        (root) => {
+          rmSync(join(root, 'received-drops'), { recursive: true });
+        },
+      ],
+      [
+        'marker integrity',
+        (root) => {
+          unlinkSync(join(root, 'received-drops', live));
+        },
+      ],
+      [
+        'missing version',
+        (root) => {
+          unlinkSync(join(root, 'received-drops-version'));
+          unlinkSync(join(root, 'received-drops-clock'));
+        },
+      ],
+    ];
+    for (const [reason, lose] of cases) {
+      const root = mkdtempSync(join(tmpdir(), 'drop-replay-legacy-loss-'));
+      try {
+        writeLegacyStore(root, { markers: [live], clock: NOW });
+        lose(root);
+        const home = new DropHome(root);
+        expect(() => home.claimDrop(uuidv7(NOW + 1), NOW + 1), reason).toThrow(`E_REPLAY_STATE ${reason}`);
+        expect(() => new DropHome(root).claimDrop(uuidv7(NOW + 2), NOW + 2), reason).toThrow(
+          'E_REPLAY_STATE quarantined',
+        );
+        // After a full window and the skew, every id the lost store could hold is expired for good.
+        const after = NOW + 1 + 35 * 60_000 + 1;
+        expect(home.claimDrop(uuidv7(after), after), reason).toBe('claimed');
+        expect(home.claimDrop(live, NOW), reason).toBe('expired');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('verifies a digest written before floors and refuses to migrate a store that lost a marker', () => {
+    for (const lost of [false, true]) {
+      const root = mkdtempSync(join(tmpdir(), 'drop-replay-legacy-digest-'));
+      try {
+        const [first, second] = [uuidv7(NOW), uuidv7(NOW)];
+        writeLegacyStore(root, { markers: [first, second], clock: NOW, digest: false });
+        writeFileSync(join(root, 'received-drops-integrity'), `${sha256Hex([first, second].sort())}\n`);
+        if (lost) unlinkSync(join(root, 'received-drops', second));
+        const home = new DropHome(root);
+        if (lost) {
+          expect(() => home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toThrow('E_REPLAY_STATE marker integrity');
+        } else {
+          expect(home.claimDrop(uuidv7(NOW + 1), NOW + 1)).toBe('claimed');
+          expect(home.claimDrop(second, NOW + 2)).toBe('duplicate');
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 
@@ -371,21 +353,49 @@ describe('bounded received drops', () => {
     try {
       const home = new DropHome(root);
       const lock = join(root, 'received-drops.lock');
-      mkdirSync(lock, { mode: 0o700 });
-      writeFileSync(join(lock, 'owner'), REPLAY_LOCK_OWNER);
+      writeFileSync(lock, REPLAY_LOCK_OWNER);
       expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
       expect(readdirSync(root)).not.toContain('received-drops.lock');
-      // Age and PID cannot prove an owner is dead across slow disks or container PID namespaces.
-      for (const [index, owner] of [`${String(deadPid())} 00\n`, ''].entries()) {
-        mkdirSync(lock, { mode: 0o700 });
-        writeFileSync(join(lock, 'owner'), owner);
-        expect(() => home.claimDrop(uuidv7(NOW + index + 1), NOW + index + 1)).toThrow('E_REPLAY_STATE claim locked');
+      // A dead process is only provably dead on this host and this boot: a T3.1b record, an empty one, another host
+      // or another boot keep the lock, however old.
+      const dead = deadPid();
+      const foreign = [
+        `${String(dead)} 00\n`,
+        '',
+        replayLockOwner(dead, 'a'.repeat(16)).replace(/ [0-9a-f]{16} (\S+)\n$/, ' 0123456789abcdef $1\n'),
+        replayLockOwner(dead, 'b'.repeat(16), 't:12'),
+      ];
+      for (const [index, owner] of foreign.entries()) {
+        writeFileSync(lock, owner);
         const old = new Date(Date.now() - 5 * 60_000);
         utimesSync(lock, old, old);
-        expect(() => home.claimDrop(uuidv7(NOW + index + 1), NOW + index + 1)).toThrow('E_REPLAY_STATE claim locked');
-        expect(readdirSync(lock)).toEqual(['owner']);
-        rmSync(lock, { recursive: true });
+        expect(() => home.claimDrop(uuidv7(NOW + index + 1), NOW + index + 1), owner).toThrow(
+          'E_REPLAY_STATE claim locked',
+        );
+        expect(readFileSync(lock, 'utf8')).toBe(owner);
+        unlinkSync(lock);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('takes over a lock whose owner is provably dead, through a guard a live taker keeps', () => {
+    const root = mkdtempSync(join(tmpdir(), 'drop-replay-dead-lock-'));
+    try {
+      const home = new DropHome(root);
+      const lock = join(root, 'received-drops.lock');
+      const record = replayLockOwner(deadPid(), 'c'.repeat(16));
+      const guard = `${lock}.takeover-${createHash('sha256').update(record).digest('hex').slice(0, 16)}`;
+      writeFileSync(lock, record);
+      // Another live process is taking it over: wait for it.
+      writeFileSync(guard, replayLockOwner(process.ppid, 'd'.repeat(16)));
+      expect(() => home.claimDrop(uuidv7(NOW), NOW)).toThrow('E_REPLAY_STATE claim locked');
+      expect(readFileSync(lock, 'utf8')).toBe(record);
+      // That taker died too: its guard is taken over the same way.
+      writeFileSync(guard, replayLockOwner(deadPid(), 'e'.repeat(16)));
+      expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
+      expect(readdirSync(root).filter((name) => name.startsWith('received-drops.lock'))).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -395,14 +405,13 @@ describe('bounded received drops', () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-takeover-'));
     try {
       const home = new DropHome(root);
+      // The T3.1b lock was a directory: it is never taken over, whatever sits next to it.
       const lock = join(root, 'received-drops.lock');
       mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(join(lock, 'owner'), `${String(deadPid())} 00\n`);
       const old = new Date(Date.now() - 5 * 60_000);
       utimesSync(lock, old, old);
       mkdirSync(`${lock}.takeover`, { mode: 0o700 });
-      expect(() => home.claimDrop(uuidv7(NOW), NOW)).toThrow('E_REPLAY_STATE claim locked');
-      expect(readdirSync(root)).toContain('received-drops.lock');
-      utimesSync(`${lock}.takeover`, old, old);
       expect(() => home.claimDrop(uuidv7(NOW), NOW)).toThrow('E_REPLAY_STATE claim locked');
       expect(readdirSync(root)).toContain('received-drops.lock');
     } finally {
@@ -415,10 +424,10 @@ describe('bounded received drops', () => {
     try {
       const home = new DropHome(root);
       const lock = join(root, 'received-drops.lock');
-      mkdirSync(lock, { mode: 0o700 });
-      writeFileSync(join(lock, 'owner'), `${String(process.ppid)}\n`);
+      const owner = replayLockOwner(process.ppid, '1'.repeat(16));
+      writeFileSync(lock, owner);
       expect(() => home.claimDrop(uuidv7(NOW), NOW)).toThrow('E_REPLAY_STATE claim locked');
-      expect(readdirSync(lock)).toEqual(['owner']);
+      expect(readFileSync(lock, 'utf8')).toBe(owner);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -447,11 +456,18 @@ describe('replay admission through the engine', () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-engine-full-'));
     try {
       const node = await ownerNode(root);
-      fillMarkers(root, NOW, MAX_RECEIVED_DROPS);
+      writeJournalStore(
+        root,
+        NOW,
+        entries(idsAt(NOW, MAX_RECEIVED_DROPS), 'legacy', NOW).map((entry) => ({ ...entry, tag: '0'.repeat(16) })),
+      );
       await node.send(uuidv7(NOW));
       expect(node.engine.pending()).toHaveLength(0);
-      expect(readdirSync(join(root, 'received-drops'))).toHaveLength(MAX_RECEIVED_DROPS);
+      expect(journalIds(root)).toHaveLength(MAX_RECEIVED_DROPS);
       expect(await node.lastReply()).toMatchObject({ type: 'drop_error', code: 'E_RATE' });
+      expect(node.logs).toContainEqual(
+        expect.objectContaining({ event: 'drop_rejected', code: 'E_RATE', reason: 'replay_capacity' }),
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -609,16 +625,38 @@ describe('replay admission through the engine', () => {
     }
   });
 
+  it('refuses a peer holding its replay share with E_RATE before consent, while another peer is admitted', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'drop-replay-engine-peer-quota-'));
+    try {
+      const node = await ownerNode(root);
+      writeJournalStore(root, NOW, entries(idsAt(NOW, MAX_RECEIVED_DROPS_PER_PEER), node.requester.nodeId, NOW));
+      await node.send(uuidv7(NOW));
+      expect(node.engine.pending()).toHaveLength(0);
+      expect(await node.lastReply()).toMatchObject({ type: 'drop_error', code: 'E_RATE' });
+      expect(node.logs).toContainEqual(
+        expect.objectContaining({ event: 'drop_rejected', code: 'E_RATE', reason: 'replay_peer_quota' }),
+      );
+      await node.send(uuidv7(NOW), node.other);
+      expect(node.engine.pending()).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses another request before consent when active execution memory is full', async () => {
     const root = mkdtempSync(join(tmpdir(), 'drop-replay-engine-active-cap-'));
     try {
       const node = await ownerNode(root);
       for (let index = 0; index < MAX_ACTIVE_EXECUTING_DROPS; index += 1) await node.send(uuidv7(NOW + index));
       expect(node.engine.memoryStats().executing).toBe(MAX_ACTIVE_EXECUTING_DROPS);
+      // From another peer, whose replay share is still free: only the execution cap can refuse it.
       const extra = uuidv7(NOW + MAX_ACTIVE_EXECUTING_DROPS);
-      await node.send(extra);
+      await node.send(extra, node.other);
       expect(node.engine.pending()).toHaveLength(MAX_ACTIVE_EXECUTING_DROPS);
-      expect(await node.lastReply()).toMatchObject({ type: 'drop_error', dropId: extra, code: 'E_RATE' });
+      expect(await node.lastReply(node.other)).toMatchObject({ type: 'drop_error', dropId: extra, code: 'E_RATE' });
+      expect(node.logs).toContainEqual(
+        expect.objectContaining({ event: 'drop_rejected', code: 'E_RATE', reason: 'execution_capacity' }),
+      );
       expect(node.engine.memoryStats().executing).toBe(MAX_ACTIVE_EXECUTING_DROPS);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -687,7 +725,7 @@ describe('private replay admission', () => {
         ).message,
       ).toMatchObject({ type: 'drop_error', code: 'E_EXPIRED' });
       expect(home.claimDrop(uuidv7(NOW), NOW)).toBe('claimed');
-      writeFileSync(join(root, 'received-drops-clock'), 'corrupt');
+      writeFileSync(join(root, REPLAY_JOURNALS[0]), 'corrupt');
       await engine.handleEnvelope(await request(uuidv7(NOW)));
       expect(engine.pending()).toHaveLength(0);
       expect(
