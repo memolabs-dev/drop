@@ -64,6 +64,54 @@ Le test Vitest a aussi régénéré `packages/node/src/workspace-assets.generate
 worktree. Le rapport est publié depuis **un second worktree propre**, créé à partir du même
 commit, pour ne pas intégrer cet artefact accidentel. Pas de modification produit.
 
+## Verdict Mac : scénario isolé et suite complète
+
+Deuxième environnement, même base, mesuré le 18 octobre 2026 sur le Mac du propriétaire
+(Mac16,12, 10 processeurs, 16 Go, Node 24.21.0, Vitest 5.0.3), sur `c58949c`, la tête de
+cette branche au-dessus de `351672c8`. C'est l'environnement que l'action 2 désignait.
+
+### Scénario SIGTERM seul, puis sous charge
+
+`npx vitest run packages/simulation/test/campaign.test.ts -t SIGTERM`
+
+| Exécution | Résultat | Durée du test |
+| --- | --- | --- |
+| Isolé, 3 fois | 3 réussites sur 3 | 2,91 s ; 2,98 s ; 3,05 s |
+| Trois suites concurrentes, 3 tours, 9 exécutions | 9 réussites sur 9 | 3,34 s à 3,64 s |
+| Suite complète, 122 fichiers en parallèle | 1 réussite sur 1 | **4,81 s** |
+
+Aucune anomalie d'environnement observée, ni dans les 12 exécutions ciblées ni dans les
+deux passages de la suite complète. Le flake n'est pas reproduit : ni seul, ni sous trois
+copies concurrentes, ni sous la charge de la suite entière. Le coût de la concurrence est
+réel mais modeste (environ 3,0 s seul, 3,5 s à trois, 4,81 s dans la suite), très loin du
+dépassement de 60 s mesuré avant la PR #68.
+
+### Suite complète : les échecs du VPS sont environnementaux
+
+| Environnement | Commande | Résultat | Durée |
+| --- | --- | --- | --- |
+| VPS (sandbox réseau) | `npm test` | Exit 1 ; 825 réussites, 5 échecs, 7 ignorés | 253,40 s |
+| Mac | `pnpm test` | **Exit 0** ; 836 réussites, 0 échec, 1 ignoré | 84,75 s |
+
+C'est le même ensemble de 837 tests. Les cinq échecs du VPS passent sur le Mac, et six des
+sept tests ignorés y sont exécutés (conditions de plateforme). Aucune trace de
+`uv_interface_addresses` ni d'`ENOENT` : ces échecs s'expliquent par le sandbox réseau, pas
+par le code. Un second passage en rapporteur JSON confirme `success: true`, 836 réussites,
+0 échec, 1 ignoré, et le test SIGTERM à l'état `passed` en 4,81 s sur un fichier mesuré à
+15,75 s.
+
+### Lint, typecheck et artefacts
+
+- `pnpm lint` : exit 0 en 10 s (ESLint sans avertissement, Prettier conforme).
+- `pnpm typecheck` : exit 0 en 2 s.
+- La suite régénère `packages/node/src/workspace-assets.generated.ts`. Cet artefact n'est
+  pas inclus dans la branche, comme pour le run VPS.
+
+**Verdict sur T4.25 : stable sur le Mac dans les conditions mesurées.** La limite reste la
+charge : trois copies concurrentes et la suite de 122 fichiers, pas 79 fichiers pilotés
+séparément. Ce constat ne remplace pas la revue du correctif de la PR #68, et il ne mesure
+aucune différence entre les trois méthodes comparées.
+
 ### Mesures historiques — source PR #68, le 12 octobre (distinctes de celles du jour)
 
 - Diagnostic initial : test seul 12 s ; les démarrages à froid augmentaient fortement sous
@@ -94,14 +142,17 @@ contrôles**. Les données VPS restent limitées par le sandbox réseau.
 
 1. Ne pas rouvrir T4.25 : il est `done`. La suite de simulation est suivie par T4.42,
    tâche distincte et hors périmètre de #118.
-2. Classer les échecs Vitest sur un environnement adapté (notamment réseau/mDNS) et exécuter
-   le scénario SIGTERM isolé sur Mac avant tout verdict sur sa fiabilité actuelle.
+2. **Fait le 18 octobre** : classer les échecs Vitest sur un environnement adapté, notamment
+   réseau/mDNS, et exécuter le scénario SIGTERM isolé sur Mac. Voir la section « Verdict
+   Mac » : suite verte en 84,75 s, test SIGTERM vert 12 fois sur 12 en ciblé et 4,81 s sous
+   la charge complète, aucun des cinq échecs VPS reproduit.
 3. Conserver la source normative OpenSpec ; enrichir Beads/Memo Bridge avec des références
    obligatoires `contract_ref`, `test_ref`, `evidence_ref`.
-4. Ne pas fusionner ou déployer ce benchmark sans revue. Le Mac reste bloqué pour Drop
-   (`project_not_allowed`) tant que
-   [Memo Bridge #184](https://github.com/memolabs-dev/memo-bridge/pull/184)
-   n'est pas revu et activé.
+4. Ne pas fusionner ou déployer ce benchmark sans revue.
+   [Memo Bridge #184](https://github.com/memolabs-dev/memo-bridge/pull/184) a été fusionnée
+   le 18 octobre 2026 (`a018f88`) et `drop` est enrôlé sur le runtime Mac : 24 projets
+   autorisés, un projet hors liste restant refusé avec un message qui nomme le runtime qui
+   répond.
 
 **Verdict : OpenSpec + Memo Bridge/Beads pour Drop ; Spec Kit comme format comparatif, pas
 comme deuxième source normative.** C'est une décision d'intégration, pas un score de performance.
