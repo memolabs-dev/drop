@@ -2,13 +2,16 @@
 # (Memo Labs autoloop T-M2b, memolabs-dev/memo-bridge docs/MERGIFY_FLEET_ADOPTION.md).
 # Mergify already refuses such a PR; this makes the reason visible on the PR itself.
 #
-# pull_request_target runs this file from the base branch with a write token, so it never
-# checks out or runs PR code: it only reads the PR's file list and the base .mergify.yml
-# through the API. PR data reaches the shell through env, never through ${{ }} in the script.
+# pull_request runs this file from the pull request with a token that may only read the contents,
+# label the pull request and comment on it, so it never checks out or runs PR code: it only reads
+# the PR's file list and the base .mergify.yml through the API. PR data reaches the shell through
+# env, never through ${{ }} in the script. The job is skipped for pull requests from forks, which
+# Mergify never merges anyway: pull_request_target would be needed only for them, and this
+# repository's zizmor gate (and its pull request policy) refuses that trigger.
 name: Sensitive paths
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
 
 permissions: {}
