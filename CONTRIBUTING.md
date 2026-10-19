@@ -88,7 +88,7 @@ How a pull request gets merged:
 - The `test` check (lint, typecheck, tests, openspec-guard) and the `test-windows` and `test-macos` checks must pass, on a branch that is up to date with `main`. All three are required on `main`, with no bypass.
 - Every review conversation must be resolved.
 - `main` only takes merge commits. No squash, no rebase merge, no force push.
-- The maintainer reviews and merges. Changes that touch `protocol`, `relay`, `node`, `runner`, the capabilities or `requester-mcp` also get a security review, so they take longer.
+- A green pull request from `guillaume-flambard` or `memo-labs-automation[bot]` merges itself through Mergify, unless it touches a protected path: the security packages (`protocol`, `relay`, `node`, `runner`, capabilities, `requester-mcp`), `crates/drop-iroh`, the desktop trust files (`tauri.conf.json`, `*.entitlements`, `updater.pub`) or the gate files (`.github/`, `.mergify.yml`, `CODEOWNERS`, `AGENTS.md`, `.env`). Those stay open, wait for the maintainer's merge, and still get a security review when they touch `protocol`, `relay`, `node`, `runner`, the capabilities or `requester-mcp`. The reason a pull request is held is in its `Mergify Merge Queue` check.
 - This is a one-person project: reviews are best effort. A short, focused pull request is reviewed faster than a large one.
 
 Do not include real configurations, conversations, identifiers, keys or screenshots with personal data in a diff, a fixture or a pull request description.

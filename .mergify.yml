@@ -1,0 +1,34 @@
+# Memo Labs autoloop merge policy, adopted from memolabs-dev/memo-bridge
+# docs/MERGIFY_FLEET_ADOPTION.md (Drop issue #120).
+# A green pull request from a trusted author lands without a human. The protected paths wait for
+# the owner; the "Mergify Merge Queue" check on the pull request names the condition that blocks it.
+# The protected set is Drop's, on top of the fleet gate files: the six security packages, the
+# transport crate and the desktop trust files.
+shared:
+  land_conditions: &land_conditions
+    - base = main
+    - -draft
+    - -from-fork
+    - or:
+        - author = memo-labs-automation[bot]
+        - author = guillaume-flambard
+    - label != hold-merge
+    - label != needs-human-review
+    - -files ~= ^(\.github/|\.mergify\.yml$|CODEOWNERS$|AGENTS\.md$|\.env|packages/(protocol|relay|node|runner|capabilities|requester-mcp)/|crates/drop-iroh/|apps/desktop/src-tauri/tauri\.conf\.json$|apps/desktop/src-tauri/.*\.entitlements$|apps/desktop/updater\.pub$)
+    - check-success = @github-actions/test
+    - check-success = @github-actions/test-windows
+    - check-success = @github-actions/test-macos
+
+merge_queue:
+  max_parallel_checks: 1
+
+merge_protections_settings:
+  auto_merge_conditions: *land_conditions
+
+queue_rules:
+  - name: memo-labs-autoloop
+    batch_size: 1
+    # main only takes merge commits (CONTRIBUTING), and the ruleset allows no other method.
+    merge_method: merge
+    queue_conditions: *land_conditions
+    merge_conditions: *land_conditions
