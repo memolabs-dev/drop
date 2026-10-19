@@ -14,6 +14,6 @@
     "@drop/relay": "workspace:*",
     "@drop/requester-mcp": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   }
 }
