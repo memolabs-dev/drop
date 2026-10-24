@@ -1,7 +1,7 @@
 # The enterprise relay alone (T4.10, D81): one bundled file on Node, run as a non-root user. The relay keeps nothing
 # but its queue, its admissions and its revocations, all under /data; mount /data read-write and run the root
 # filesystem read-only. Build from the repository root: docker build -f docker/relay.Dockerfile -t drop-relay .
-FROM node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS build
+FROM node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 AS build
 WORKDIR /src
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -10,7 +10,7 @@ COPY scripts/bundle.ts ./scripts/bundle.ts
 RUN pnpm install --frozen-lockfile
 RUN node scripts/bundle.ts --out /out
 
-FROM node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+FROM node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
 WORKDIR /app
 COPY --from=build /out/drop-relay.mjs ./drop-relay.mjs
 COPY docker/relay-health.ts ./relay-health.ts
