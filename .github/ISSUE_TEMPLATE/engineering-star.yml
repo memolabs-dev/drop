@@ -1,0 +1,57 @@
+name: 'Engineering task · STAR'
+description: 'One scoped and independently verifiable engineering task'
+title: 'task: '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting, search existing issues. One issue should produce one verifiable result.
+        Use labels for priority and agent eligibility only after triage.
+  - type: textarea
+    id: situation
+    attributes:
+      label: 'S — Situation'
+      description: 'Observed problem, user impact, and relevant context.'
+      placeholder: 'What is true now? Link source evidence.'
+    validations:
+      required: true
+  - type: textarea
+    id: task
+    attributes:
+      label: 'T — Task'
+      description: 'Single deliverable, scope boundaries, and references to specs.'
+      placeholder: 'Deliver X, without changing Y. Spec: ...'
+    validations:
+      required: true
+  - type: textarea
+    id: actions
+    attributes:
+      label: 'A — Proposed actions'
+      description: 'Suggested approach; agent must validate against real repository state.'
+      placeholder: 'Relevant files, checks, dependencies.'
+    validations:
+      required: false
+  - type: textarea
+    id: results
+    attributes:
+      label: 'R — Expected result and acceptance'
+      description: 'Observable acceptance criteria; do not claim success in advance.'
+      placeholder: "- [ ] User-observable behavior\n- [ ] Exact tests pass\n- [ ] Evidence in PR"
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 'Dependencies / risks / human gates'
+      description: 'Blocking issues, secrets, permissions, deployment or approval requirements.'
+      placeholder: 'Related #...; changes needing human acceptance...'
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 'Evidence and follow-up'
+      description: 'Filled during execution; keep actual command outcomes and exact commit SHA.'
+      placeholder: 'PR, test logs, screenshots, blocked reason and next action.'
+    validations:
+      required: false
