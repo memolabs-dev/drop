@@ -78,14 +78,24 @@ The tests use fixtures and simulated model providers. They need no API key and n
 
 ### Local demo
 
+[![Real offline CLI flow: signed receipt and bounded result (captioned reconstruction)](docs/demo/offline-consent-poster-20261025.png)](docs/demo/offline-consent-e2e-20261025.mp4)
+
+[**Watch the 42-second keyless CLI walkthrough**](docs/demo/offline-consent-e2e-20261025.mp4) · [**Reproduce and read the evidence limits**](docs/demo/offline-proof-20261025.md)
+
+The clip reconstructs the **actual output of a local scripted test**, not a live UI recording. The owner's decision was scripted, and no external usability or security certification is implied.
+
 ```bash
-bash scripts/demo-local.sh
+# Local, deterministic and keyless; no external LLM calls or Keychain access
+bash scripts/demo-local.sh --offline
+
+# Optional second scenario with an explicitly provided key
+OPENROUTER_API_KEY=your-key bash scripts/demo-local.sh
 ```
 
 The script starts a relay and three nodes on `127.0.0.1` (ports 7790 to 7793) in a temporary directory, then plays two scenarios through the requester's MCP server:
 
 - **Production error summary.** Runs without any model or key: request, approval, result, receipts and a leak check.
-- **A question about a colleague's repository** (`repo.answer`). This part calls a remote model through OpenRouter and needs `OPENROUTER_API_KEY`. Without a key, it stops after the approval step.
+- **A question about a colleague's repository** (`repo.answer`). This part calls a remote model through OpenRouter and needs `OPENROUTER_API_KEY`. Without a key, or with `--offline`, the script exits successfully after the deterministic approval/result/receipt/leak-check scenario. The script never searches macOS Keychain for an API key; the networked example requires an explicitly supplied variable.
 
 The demo nodes use the historical profile (`--profile legacy`), so it does not demonstrate the private profile. The script output is in French. To run a private setup by hand, follow [the private profile guide](docs/PRIVATE_PROFILE.md) (in French).
 
