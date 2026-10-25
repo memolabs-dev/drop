@@ -46,6 +46,7 @@ Produits proches et leur différence (sources : [recherche §1](../research/2026
 - **agentgateway** (Apache-2.0) : passerelle LLM, MCP et A2A avec contrôle d'accès par rôle.
 - **Preloop, withHuman, Impri** : approbation humaine par appel d'outil, puis l'agent lit la donnée.
 - **Microsoft Agent 365 et Entra Agent ID** : registre d'agents et approbation administrateur.
+- **Gemini agent (Google, annoncé le 8 octobre 2026)** : agent d'entreprise qui se connecte à des serveurs MCP internes et externes, avec identité par agent, droits par rôle, Agent Gateway et journal d'audit ; l'administrateur décide de l'accès ([annonce](https://cloud.google.com/blog/products/ai-machine-learning/welcome-to-gemini-at-work-2026)).
 
 **Hypothèse H2.** Aucun produit ne fait valider le contenu sortant par son propriétaire. Critère : revue concurrentielle refaite avant le lancement, inscrite dans le périmètre de T4.13. Statut : inférence de la recherche du 10 octobre 2026.
 
