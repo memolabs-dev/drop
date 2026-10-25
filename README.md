@@ -44,6 +44,17 @@ The dated progress report is [docs/AVANCEMENT.md](docs/AVANCEMENT.md) (in French
 
 A longer walkthrough with diagrams is in [the guide](docs/GUIDE.md) (in French).
 
+## See the consent experience
+
+These two **real interface screenshots** are from a [documented maintainer-only pilot, 8 October 2026](docs/demo/README.md). They show what approval and outbound-answer review look like; they are **not** a claim of external usability or a completed independent security audit.
+
+| 1. Approve a limited request | 2. Review the response before sending |
+| --- | --- |
+| [![Owner-facing approval card showing requester, purpose, what is returned, what stays private, allow once and deny actions](docs/demo/cc-01-consent-traefik.jpg)](docs/demo/README.md) | [![Owner-facing response review with per-field removal and explicit send or cancel controls](docs/demo/cc-03-review-julie.jpg)](docs/demo/README.md) |
+| **Allow once, deny or defer.** The card says why access is requested and what is excluded. | **Send only approved fields.** The owner can remove fields and refuse the outgoing answer. |
+
+[Read the full dated two-actor demo and its observed limitations](docs/demo/README.md). The demo was performed on the maintainer's machines; a new independent user journey, clean-machine acceptance and public installer are still outstanding.
+
 ## What exists today
 
 Everything below is on `main` and covered by tests. Task IDs refer to [docs/TASKS.md](docs/TASKS.md).
