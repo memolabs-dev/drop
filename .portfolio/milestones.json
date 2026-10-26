@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "milestones": [
+    {
+      "kind": "prototype",
+      "date": "2026-10-12",
+      "title": {
+        "fr": "Panneau de bureau React intégré",
+        "en": "React desktop panel merged"
+      },
+      "detail": {
+        "fr": "Interface et tests de composants fusionnés. La validation manuelle sur un ordinateur neuf reste à réaliser.",
+        "en": "UI components and component tests were merged. Manual acceptance on a clean computer remains outstanding."
+      },
+      "evidenceUrl": "https://github.com/memolabs-dev/drop/pull/59"
+    },
+    {
+      "kind": "prototype",
+      "date": "2026-10-25",
+      "title": {
+        "fr": "Captures de la démonstration interne publiées",
+        "en": "Internal pilot screenshots published"
+      },
+      "detail": {
+        "fr": "Deux captures issues d'un essai sur les machines du mainteneur documentent les écrans. Aucun essai par un utilisateur externe n'est revendiqué.",
+        "en": "Two screenshots from a maintainer-operated pilot document the interface. No external-user evaluation is claimed."
+      },
+      "evidenceUrl": "https://github.com/memolabs-dev/drop/pull/131"
+    }
+  ]
+}
