@@ -5,11 +5,19 @@
 #  - "Julie", which executes repo.answer on her own fixture repo with her own LLM key (high sensitivity: she reviews
 #    the answer before it leaves);
 #  - "Guillaume", who asks both through the MCP server, like Claude Code would.
-# repo.answer uses OpenRouter's free nemotron model with OPENROUTER_API_KEY (taken from the macOS keychain entry
-# 'OpenRouter API Key' when not set). Julie's key pays; Guillaume's agent spends nothing.
-# Usage: scripts/demo-local.sh [workdir]   (default: a new temp dir; nothing outside it is touched)
+# repo.answer uses the OpenRouter model only when OPENROUTER_API_KEY is explicitly supplied.
+# The deterministic offline path does not access Keychain or a model provider.
+# Usage: scripts/demo-local.sh [--offline] [workdir]
+# --offline (or no OPENROUTER_API_KEY) runs only the deterministic scenario; no cloud model or keychain reads.
+# Workdir defaults to a new temp dir; demo node state remains inside it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OFFLINE=0
+if [[ "${1:-}" == "--offline" ]]; then OFFLINE=1; shift; fi
+if [[ "${1:-}" == --* ]] || [[ "$#" -gt 1 ]]; then
+  echo "Usage: $0 [--offline] [workdir]" >&2
+  exit 64
+fi
 WORK="${1:-$(mktemp -d -t drop-demo)}"
 DROP="node $ROOT/packages/node/src/cli.ts"
 RELAY="node $ROOT/packages/relay/src/cli.ts"
@@ -67,7 +75,11 @@ step "Julie publishes repo.answer on her repo, approved by herself"
 DROP_HOME="$WORK/julie" $DROP publish repo.answer --approver "$JULIE_ID" --config "$WORK/repo-answer.json"
 
 step "Start the three daemons (only Julie's has an LLM key)"
-OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-$(security find-generic-password -a "$USER" -s 'OpenRouter API Key' -w 2>/dev/null || true)}"
+if [[ "$OFFLINE" -eq 1 ]]; then
+  OPENROUTER_API_KEY=""
+else
+  OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+fi
 DROP_HOME="$WORK/vps" env -u OPENROUTER_API_KEY $DROP serve > "$WORK/vps.log" 2>&1 & PIDS+=($!)
 DROP_HOME="$WORK/mac" env -u OPENROUTER_API_KEY $DROP serve > "$WORK/mac.log" 2>&1 & PIDS+=($!)
 DROP_HOME="$WORK/julie" OPENROUTER_API_KEY="$OPENROUTER_API_KEY" $DROP serve > "$WORK/julie.log" 2>&1 & PIDS+=($!)
@@ -107,6 +119,12 @@ DROP_HOME="$WORK/mac" $DROP receipts
 
 step "Leak check: no log fragment in what the requester received"
 if grep -R -E "alice@example|sk-ant-|9f1c2b7e|10\.0\.0\.7|42\.00" "$WORK/mac" >/dev/null 2>&1; then echo "LEAK FOUND"; exit 1; else echo "no leak"; fi
+
+if [[ "$OFFLINE" -eq 1 ]] || [[ -z "$OPENROUTER_API_KEY" ]]; then
+  step "Offline demo complete: consent, deterministic answer, receipts and leak check passed"
+  echo "No model endpoint was called. The repo.answer LLM scenario requires explicit OPENROUTER_API_KEY."
+  exit 0
+fi
 
 step "Agent side (MCP): ask Julie's repo a question"
 OUT="$(DROP_HOME="$WORK/mac" $PROBE request '{"capability_id":"repo.answer","input":{"question":"Est-ce que l implementation de Julie gere deja le mode sombre ?"},"purpose":"Savoir si je dois coder le mode sombre ou réutiliser le sien"}')"
