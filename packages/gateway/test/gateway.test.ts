@@ -111,7 +111,7 @@ async function linkedAssistant(
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`${publicUrl}/mcp`), {
       requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } },
-    }) as Transport,
+    }),
   );
   return client;
 }

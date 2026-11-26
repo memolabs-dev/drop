@@ -233,7 +233,7 @@ export function startGatewayHttp(
         transport.close().catch(() => undefined);
         server.close().catch(() => undefined);
       });
-      await server.connect(transport as Parameters<McpServer['connect']>[0]);
+      await server.connect(transport);
       await transport.handleRequest(req, res, body);
       return;
     }

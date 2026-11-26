@@ -9,7 +9,6 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { z } from 'zod';
 import { DropError } from '@drop/protocol';
 import { McpConnectError } from './mcp-answer.ts';
@@ -202,8 +201,7 @@ export class OAuthSignIns {
     const transport = new StreamableHTTPClientTransport(new URL(serverUrl), { authProvider: provider });
     const client = new Client({ name: 'drop-sign-in', version: '1.0.0' });
     try {
-      // The SDK's transport types predate exactOptionalPropertyTypes (sessionId?: string vs string | undefined).
-      await client.connect(transport as Transport);
+      await client.connect(transport);
       await client.close();
       return { connected: true };
     } catch (error) {
